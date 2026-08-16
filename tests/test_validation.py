@@ -10,6 +10,7 @@ from second_brain.service import BrainService
 def _commit(service: BrainService, title: str, **overrides):
     payload = dict(
         note_type="concept",
+        domain="tech",
         content=f"Body text for {title}.",
         title=title,
         summary=f"What {title} is for.",
@@ -24,16 +25,17 @@ def _commit(service: BrainService, title: str, **overrides):
 def test_lint_flags_a_hand_written_note_that_bypassed_the_save_path(tmp_path: Path) -> None:
     vault = tmp_path / "vault"
     service = BrainService(vault)
-    (vault / "Notes" / "Hand Written.md").write_text(
+    (vault / "Tech" / "Notes" / "Hand Written.md").write_text(
         dump_note(
-            {"id": "note-manual", "type": "concept", "status": "approved", "tags": ["testing"]},
+            {"id": "note-manual", "type": "concept", "domain": "tech",
+             "status": "approved", "tags": ["testing"]},
             "# Hand Written\n\n## Summary\n\nAdded by hand.\n",
         ),
         encoding="utf-8",
     )
 
     report = service.validate()
-    problems = next(f for f in report["findings"] if f["path"] == "Notes/Hand Written.md")["problems"]
+    problems = next(f for f in report["findings"] if f["path"] == "Tech/Notes/Hand Written.md")["problems"]
 
     assert any("aliases" in problem for problem in problems)
     assert any("map" in problem for problem in problems)
@@ -64,11 +66,12 @@ def test_lint_reports_folders_left_over_from_the_old_layout(tmp_path: Path) -> N
 def test_null_source_url_is_reported_rather_than_treated_as_a_value(tmp_path: Path) -> None:
     vault = tmp_path / "vault"
     service = BrainService(vault)
-    (vault / "Notes" / "Null URL.md").write_text(
+    (vault / "Tech" / "Notes" / "Null URL.md").write_text(
         dump_note(
             {
                 "id": "note-null",
                 "type": "concept",
+                "domain": "tech",
                 "status": "approved",
                 "tags": ["testing", "fixture"],
                 "aliases": ["a", "b"],
@@ -81,7 +84,7 @@ def test_null_source_url_is_reported_rather_than_treated_as_a_value(tmp_path: Pa
     )
 
     problems = next(
-        f for f in service.validate()["findings"] if f["path"] == "Notes/Null URL.md"
+        f for f in service.validate()["findings"] if f["path"] == "Tech/Notes/Null URL.md"
     )["problems"]
 
     assert any("source_url is null" in problem for problem in problems)
@@ -104,7 +107,7 @@ def test_a_map_does_not_outrank_the_note_it_indexes(tmp_path: Path) -> None:
 
     hits = index.search("semantic chunking", limit=5, hops=1)
 
-    assert hits[0].path == "Notes/Semantic Chunking.md"
+    assert hits[0].path == "Tech/Notes/Semantic Chunking.md"
     assert hits[0].note_type != "map"
 
 
@@ -119,4 +122,4 @@ def test_graph_hops_do_not_travel_through_a_map(tmp_path: Path) -> None:
 
     hits = index.search("retrieval latency", limit=6, hops=1)
 
-    assert "Notes/Unrelated Beta.md" not in [hit.path for hit in hits]
+    assert "Tech/Notes/Unrelated Beta.md" not in [hit.path for hit in hits]

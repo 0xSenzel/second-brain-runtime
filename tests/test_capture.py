@@ -11,6 +11,7 @@ def _prepare(service: BrainService, **overrides):
     """A proposal that satisfies every structural rule, so tests override one field at a time."""
     payload = dict(
         note_type="prompt",
+        domain="tech",
         content="Review a UI for hierarchy, spacing, and accessibility.",
         title="Frontend Design Critique",
         summary="A reusable prompt for structured interface critique.",
@@ -30,13 +31,13 @@ def test_prepare_is_pending_and_commit_writes_the_note(tmp_path: Path) -> None:
     proposal = _prepare(service)
 
     assert proposal.status == "pending"
-    assert not (vault / "Prompts" / "Frontend Design Critique.md").exists()
+    assert not (vault / "Tech" / "Prompts" / "Frontend Design Critique.md").exists()
     assert (vault / "Reviews" / "Pending" / f"{proposal.id}.md").exists()
 
     saved = service.commit_save(proposal.id)
 
     assert saved.status == "approved"
-    assert saved.note_path == "Prompts/Frontend Design Critique.md"
+    assert saved.note_path == "Tech/Prompts/Frontend Design Critique.md"
     assert (vault / saved.note_path).exists()
     assert (vault / saved.source_path).exists()
     assert not (vault / "Reviews" / "Pending" / f"{proposal.id}.md").exists()
@@ -50,7 +51,7 @@ def test_reject_never_writes_canonical_knowledge(tmp_path: Path) -> None:
 
     service.reject_save(proposal.id)
 
-    assert not (vault / "Skills" / "Useful Skill.md").exists()
+    assert not (vault / "Tech" / "Skills" / "Useful Skill.md").exists()
     assert (vault / "Reviews" / "Rejected" / f"{proposal.id}.md").exists()
 
 
@@ -69,7 +70,7 @@ def test_topic_lives_in_tags_not_in_the_folder_path(tmp_path: Path) -> None:
         tags=["frontend", "design-reference"],
     )
 
-    assert proposal.target_path == "Notes/Interface Reference.md"
+    assert proposal.target_path == "Tech/Notes/Interface Reference.md"
     assert not (vault / "Knowledge").exists()
     assert not (vault / "Resources").exists()
 
@@ -90,11 +91,26 @@ def test_every_note_type_maps_to_exactly_one_folder(tmp_path: Path) -> None:
         "prompt": "Prompts",
         "skill": "Skills",
         "project": "Projects",
+        "essay": "Essays",
     }
 
     for note_type, folder in expected.items():
         proposal = _prepare(service, note_type=note_type, title=f"Item {note_type}")
-        assert proposal.target_path == f"{folder}/Item {note_type}.md"
+        assert proposal.target_path == f"Tech/{folder}/Item {note_type}.md"
+
+
+def test_domain_is_the_second_axis_and_is_closed(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    service = BrainService(vault)
+
+    personal = _prepare(service, domain="personal", note_type="essay", title="On Patience")
+    assert personal.target_path == "Personal/Essays/On Patience.md"
+
+    tech = _prepare(service, domain="tech", note_type="essay", title="On Patience")
+    assert tech.target_path == "Tech/Essays/On Patience.md"
+
+    with pytest.raises(ValidationError, match="domain"):
+        _prepare(service, domain="fitness", title="Squats")
 
 
 def test_sources_are_flat_and_id_prefixed(tmp_path: Path) -> None:
@@ -117,7 +133,7 @@ def test_source_kind_is_provenance_and_does_not_affect_placement(tmp_path: Path)
     saved = service.commit_save(proposal.id)
     metadata, _ = read_note(vault / saved.note_path)
 
-    assert saved.note_path == "Notes/Refero.md"
+    assert saved.note_path == "Tech/Notes/Refero.md"
     assert metadata["type"] == "concept"
     assert metadata["source_kind"] == "reference-site"
 
@@ -165,11 +181,17 @@ def test_destination_may_be_chosen_but_must_match_the_type(tmp_path: Path) -> No
     vault = tmp_path / "vault"
     service = BrainService(vault)
 
-    ok = _prepare(service, note_type="project", destination="Projects/Vault Rebuild/Overview.md")
-    assert ok.target_path == "Projects/Vault Rebuild/Overview.md"
+    ok = _prepare(
+        service, note_type="project", destination="Tech/Projects/Vault Rebuild/Overview.md"
+    )
+    assert ok.target_path == "Tech/Projects/Vault Rebuild/Overview.md"
 
     with pytest.raises(ValidationError, match="destination"):
-        _prepare(service, note_type="prompt", destination="Notes/Wrong Place.md")
+        _prepare(service, note_type="prompt", destination="Tech/Notes/Wrong Place.md")
+
+    with pytest.raises(ValidationError, match="destination"):
+        # Right type, wrong domain.
+        _prepare(service, domain="tech", note_type="prompt", destination="Personal/Prompts/X.md")
 
 
 def test_destination_cannot_escape_the_vault(tmp_path: Path) -> None:
@@ -254,7 +276,7 @@ def test_duplicate_source_url_targets_a_reviewed_revision(tmp_path: Path) -> Non
         source_url="https://example.com/memory",
     )
 
-    assert revision.target_path == "Notes/Agent Memory.md"
+    assert revision.target_path == "Tech/Notes/Agent Memory.md"
     assert revision.is_revision is True
 
 
@@ -268,7 +290,7 @@ def test_revision_is_found_in_the_new_folders(tmp_path: Path) -> None:
     revision = _prepare(service, note_type="concept", title="Local RAG v2", source_url="https://example.com/rag")
 
     assert revision.is_revision is True
-    assert revision.target_path == "Notes/Local RAG.md"
+    assert revision.target_path == "Tech/Notes/Local RAG.md"
 
 
 def test_revision_preserves_the_original_note_id(tmp_path: Path) -> None:
@@ -295,7 +317,10 @@ def test_layout_does_not_recreate_retired_folders(tmp_path: Path) -> None:
 
     for retired in ("Inbox", "Knowledge", "Resources"):
         assert not (vault / retired).exists()
-    for expected in ("Notes", "Maps", "Prompts", "Skills", "Projects", "Sources", "Templates"):
+    for expected in (
+        "Tech/Notes", "Tech/Prompts", "Tech/Skills", "Tech/Projects", "Tech/Essays",
+        "Personal/Notes", "Personal/Essays", "Maps", "Sources", "Templates",
+    ):
         assert (vault / expected).is_dir()
 
 
