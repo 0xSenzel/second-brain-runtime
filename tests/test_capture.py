@@ -232,6 +232,27 @@ def test_commit_appends_the_note_to_its_map(tmp_path: Path) -> None:
     assert "A reusable prompt for structured interface critique." in map_text
 
 
+def test_map_entry_strips_markdown_headings_from_a_malformed_summary(tmp_path: Path) -> None:
+    """A caller once passed the whole '## Summary' section instead of the summary text,
+    and the heading ended up pasted into the map's list item verbatim."""
+    vault = tmp_path / "vault"
+    service = BrainService(vault)
+    proposal = _prepare(
+        service,
+        maps=["Frontend Design"],
+        summary="## Summary\n\nA Douyin walkthrough presents a two-stage workflow. It has a second sentence.",
+    )
+
+    service.commit_save(proposal.id)
+
+    map_text = (vault / "Maps" / "Frontend Design.md").read_text(encoding="utf-8")
+    entry_line = next(line for line in map_text.splitlines() if "Frontend Design Critique" in line)
+    assert "## Summary" not in entry_line
+    assert entry_line == (
+        "- [[Frontend Design Critique]] — A Douyin walkthrough presents a two-stage workflow."
+    )
+
+
 def test_map_append_is_idempotent_across_revisions(tmp_path: Path) -> None:
     vault = tmp_path / "vault"
     service = BrainService(vault)

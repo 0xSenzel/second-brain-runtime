@@ -199,7 +199,16 @@ def render_map(name: str, created_at: str, *, description: str = "") -> str:
 
 
 def map_entry(title: str, summary: str) -> str:
-    first_sentence = re.split(r"(?<=[.!?])\s+", summary.strip())[0] if summary.strip() else ""
+    """A one-line map listing for a note, built from its summary.
+
+    A caller once passed the whole '## Summary' section instead of just the summary
+    text, and the heading landed in the map verbatim because a heading has no sentence-
+    ending punctuation for the split below to find. Strip Markdown structure first, so a
+    malformed summary degrades to plain text instead of polluting the map.
+    """
+    plain = re.sub(r"(?m)^#{1,6}\s+.*$", "", summary)
+    plain = re.sub(r"\s+", " ", plain).strip()
+    first_sentence = re.split(r"(?<=[.!?])\s+", plain)[0] if plain else ""
     return f"- [[{title}]] — {first_sentence}" if first_sentence else f"- [[{title}]]"
 
 
