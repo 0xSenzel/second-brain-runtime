@@ -8,11 +8,13 @@ same rules to notes edited by hand.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .models import (
     DOMAINS,
+    MAX_SUMMARY,
     MIN_ALIASES,
     MIN_MAPS,
     MIN_TAGS,
@@ -54,6 +56,21 @@ def check_proposal(proposal: Proposal, *, registered_tags: set[str]) -> None:
         problems.append(
             "summary cannot be empty: it is the text the search index ranks on, "
             "so a note without one is close to unfindable"
+        )
+    elif re.search(r"(?m)^#{1,6}\s+\S", proposal.summary):
+        # A summary with headings is a whole document that was passed to the wrong
+        # field. It gets rendered under the note's own '## Summary' heading, nesting
+        # sections inside it and leaking Markdown into the map entry.
+        problems.append(
+            "summary contains Markdown headings, so it is a document rather than a "
+            "summary. Pass the summary text only; the full material belongs in "
+            "content_or_url, which is preserved in the source note"
+        )
+    elif len(proposal.summary) > MAX_SUMMARY:
+        problems.append(
+            f"summary is {len(proposal.summary)} characters, over the {MAX_SUMMARY} "
+            "limit. A summary is what the index ranks on and what the map entry quotes; "
+            "put the detail in the note body instead"
         )
 
     if len(proposal.tags) < MIN_TAGS:

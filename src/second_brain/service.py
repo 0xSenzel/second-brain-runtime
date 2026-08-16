@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import uuid
@@ -55,6 +56,10 @@ VAULT_FOLDERS = (
 )
 
 TAG_REGISTRY_HEADING = "## Registered tags"
+
+
+def _content_hash(content: str) -> str:
+    return hashlib.sha256(content.strip().encode()).hexdigest()
 
 
 def utc_now() -> str:
@@ -242,7 +247,29 @@ class BrainService:
             json.dumps(proposal.to_dict(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
         )
         self._review_path("Pending", proposal.id).write_text(render_review(proposal), encoding="utf-8")
+        self._supersede_earlier_attempts(proposal)
         return proposal
+
+    def _supersede_earlier_attempts(self, proposal: Proposal) -> list[str]:
+        """Retire pending proposals that captured exactly this material.
+
+        A blocked commit tells the agent to fix the metadata and prepare again, which
+        mints a fresh id and strands the previous attempt in the review queue forever.
+        Identical content means this is that retry, not a second piece of material, so
+        the earlier attempt is rejected rather than left to accumulate.
+        """
+        superseded: list[str] = []
+        content_hash = _content_hash(proposal.content)
+        for earlier in self.list_pending():
+            if earlier.id == proposal.id:
+                continue
+            if _content_hash(earlier.content) != content_hash:
+                continue
+            if earlier.source_url != proposal.source_url:
+                continue
+            self._finish_review(earlier, "Rejected")
+            superseded.append(earlier.id)
+        return superseded
 
     def commit_save(self, proposal_id: str) -> SavedItem:
         proposal = self._load_proposal(proposal_id)

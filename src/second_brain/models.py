@@ -53,6 +53,8 @@ TAG_REGISTRY_PATH = f"{MAPS_FOLDER}/Tag Registry.md"
 RETIRED_FOLDERS = ("Inbox", "Knowledge", "Resources", "Notes", "Prompts", "Skills", "Projects", "Essays")
 
 MIN_TAGS = 2
+# A runaway guard, not a style rule: long prose is fine, a pasted document is not.
+MAX_SUMMARY = 1500
 MIN_ALIASES = 2
 MIN_MAPS = 1
 

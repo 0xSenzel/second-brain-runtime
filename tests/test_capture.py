@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from second_brain.models import ValidationError
-from second_brain.notes import read_note
+from second_brain.notes import map_entry, read_note
 from second_brain.service import BrainService
 
 
@@ -232,23 +232,17 @@ def test_commit_appends_the_note_to_its_map(tmp_path: Path) -> None:
     assert "A reusable prompt for structured interface critique." in map_text
 
 
-def test_map_entry_strips_markdown_headings_from_a_malformed_summary(tmp_path: Path) -> None:
-    """A caller once passed the whole '## Summary' section instead of the summary text,
-    and the heading ended up pasted into the map's list item verbatim."""
-    vault = tmp_path / "vault"
-    service = BrainService(vault)
-    proposal = _prepare(
-        service,
-        maps=["Frontend Design"],
-        summary="## Summary\n\nA Douyin walkthrough presents a two-stage workflow. It has a second sentence.",
+def test_map_entry_strips_markdown_headings_from_a_malformed_summary() -> None:
+    """The gate now refuses a summary containing headings, so this cannot arrive via a
+    save. It stays defence in depth for the other callers — rebuilding a map reads the
+    summary back out of a note body, where a heading can legitimately follow it."""
+    entry = map_entry(
+        "Frontend Design Critique",
+        "## Summary\n\nA Douyin walkthrough presents a two-stage workflow. A second sentence.",
     )
 
-    service.commit_save(proposal.id)
-
-    map_text = (vault / "Maps" / "Frontend Design.md").read_text(encoding="utf-8")
-    entry_line = next(line for line in map_text.splitlines() if "Frontend Design Critique" in line)
-    assert "## Summary" not in entry_line
-    assert entry_line == (
+    assert "## Summary" not in entry
+    assert entry == (
         "- [[Frontend Design Critique]] — A Douyin walkthrough presents a two-stage workflow."
     )
 
@@ -355,3 +349,75 @@ def test_layout_keeps_a_retired_folder_that_still_holds_files(tmp_path: Path) ->
     BrainService(vault)
 
     assert stray.exists()
+
+
+# --- retrying a blocked save must not leave orphans ----------------------------------
+
+
+def test_re_preparing_the_same_capture_supersedes_the_blocked_attempt(tmp_path: Path) -> None:
+    """The gate tells the agent to fix and re-prepare, which mints a new id. Without
+    superseding, every blocked save leaves a dead proposal in the review queue."""
+    vault = tmp_path / "vault"
+    service = BrainService(vault)
+
+    first = _prepare(service, maps=[], source_url="https://example.com/clip")
+    with pytest.raises(ValidationError):
+        service.commit_save(first.id)
+
+    second = _prepare(service, maps=["Frontend Design"], source_url="https://example.com/clip")
+
+    pending_ids = {proposal.id for proposal in service.list_pending()}
+    assert second.id in pending_ids
+    assert first.id not in pending_ids
+    assert (vault / "Reviews" / "Rejected" / f"{first.id}.md").exists()
+
+    service.commit_save(second.id)
+    assert service.list_pending() == []
+
+
+def test_superseding_only_applies_to_the_identical_capture(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    service = BrainService(vault)
+
+    first = _prepare(service, content="One thing entirely", title="First")
+    second = _prepare(service, content="A different thing entirely", title="Second")
+
+    pending_ids = {proposal.id for proposal in service.list_pending()}
+    assert {first.id, second.id} <= pending_ids
+
+
+# --- a whole document is not a summary ------------------------------------------------
+
+
+def test_a_summary_containing_headings_is_refused(tmp_path: Path) -> None:
+    """A client passed an entire note body as the summary, which then landed under the
+    rendered '## Summary' heading and polluted the map entry."""
+    vault = tmp_path / "vault"
+    service = BrainService(vault)
+    proposal = _prepare(
+        service,
+        summary="## Summary\n\nThe real summary.\n\n## Caveats\n\nSome caveats follow.",
+    )
+
+    with pytest.raises(ValidationError, match="summary"):
+        service.commit_save(proposal.id)
+
+
+def test_a_runaway_summary_is_refused(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    service = BrainService(vault)
+    proposal = _prepare(service, summary="Prose without any headings at all. " * 100)
+
+    with pytest.raises(ValidationError, match="summary"):
+        service.commit_save(proposal.id)
+
+
+def test_a_long_but_legitimate_summary_is_accepted(tmp_path: Path) -> None:
+    """The cap is a runaway guard, not a style rule; ordinary long prose must pass."""
+    vault = tmp_path / "vault"
+    service = BrainService(vault)
+    proposal = _prepare(service, summary="A genuinely detailed prose summary. " * 30)
+
+    service.commit_save(proposal.id)
+
+    assert (vault / proposal.target_path).exists()
