@@ -9,9 +9,12 @@ def test_api_requires_approval_before_commit_and_returns_clickable_source(tmp_pa
     api = BrainAPI(tmp_path / "vault", use_embeddings=False)
     proposal = api.prepare_save(
         content_or_url="Review interfaces for accessibility.",
-        kind="prompt",
+        note_type="prompt",
         title="Accessibility Review",
         summary="A prompt for accessibility reviews.",
+        tags=["accessibility", "design-review"],
+        aliases=["A11y review prompt", "Accessibility audit prompt"],
+        maps=["Frontend Design"],
     )
 
     with pytest.raises(PermissionError):

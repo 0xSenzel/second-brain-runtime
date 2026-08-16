@@ -27,28 +27,43 @@ class BrainAPI:
         self,
         *,
         content_or_url: str,
-        kind: str | None = None,
+        note_type: str | None = None,
         title: str | None = None,
         summary: str = "",
         tags: list[str] | None = None,
+        aliases: list[str] | None = None,
+        maps: list[str] | None = None,
         connections: list[dict[str, str]] | None = None,
+        destination: str = "",
+        source_creator: str = "",
     ) -> dict[str, Any]:
         proposal = self.service.prepare_input(
             content_or_url,
-            kind=kind,
+            note_type=note_type,
             title=title,
             summary=summary,
             tags=tags,
+            aliases=aliases,
+            maps=maps,
             connections=connections,
+            destination=destination,
+            source_creator=source_creator,
         )
+        # Report the rule violations now, at proposal time, so they are visible in the
+        # preview the user reads rather than surfacing as a failure after they approve.
+        blocking = self.service.explain_blockers(proposal)
         return {
             "proposal_id": proposal.id,
             "status": proposal.status,
             "title": proposal.title,
-            "kind": proposal.kind,
+            "note_type": proposal.note_type,
             "destination": proposal.target_path,
             "source_destination": proposal.source_path,
             "summary": proposal.summary,
+            "tags": proposal.tags,
+            "aliases": proposal.aliases,
+            "maps": proposal.maps,
+            "source_kind": proposal.source_kind,
             "connections": [
                 {"relation": item.relation, "target": item.target, "reason": item.reason}
                 for item in proposal.connections
@@ -56,7 +71,16 @@ class BrainAPI:
             "is_revision": proposal.is_revision,
             "review_note": f"Reviews/Pending/{proposal.id}.md",
             "approval_required": True,
+            "blocking_problems": blocking,
+            "commit_would_succeed": not blocking,
         }
+
+    def register_tags(self, tags: list[str], meanings: dict[str, str] | None = None) -> dict[str, Any]:
+        added = self.service.register_tags(tags, meanings=meanings)
+        return {"added": added, "registered_tags": sorted(self.service.registered_tags())}
+
+    def validate(self) -> dict[str, Any]:
+        return self.service.validate()
 
     def commit_save(self, proposal_id: str, *, approved: bool) -> dict[str, Any]:
         if approved is not True:
@@ -81,7 +105,7 @@ class BrainAPI:
             {
                 "proposal_id": proposal.id,
                 "title": proposal.title,
-                "kind": proposal.kind,
+                "note_type": proposal.note_type,
                 "destination": proposal.target_path,
                 "review_note": f"Reviews/Pending/{proposal.id}.md",
             }
@@ -120,6 +144,8 @@ class BrainAPI:
             "embeddings": "available" if self.embedder else "unavailable; lexical and graph fallback active",
             "embedding_model": getattr(self.embedder, "model", None),
             "database": str(self.index.db_path),
+            "registered_tags": len(self.service.registered_tags()),
+            "unmigrated_folders": self.service.unmigrated_folders(),
         }
 
     def _uri(self, path: str) -> str:

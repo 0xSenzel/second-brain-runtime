@@ -13,7 +13,7 @@ SKIP_PARTS = {".git", ".obsidian", ".second-brain", "Templates"}
 class MigrationCandidate:
     path: Path
     title: str
-    kind: str
+    note_type: str
     source_url: str
     preview: str
 
@@ -21,7 +21,7 @@ class MigrationCandidate:
         return {
             "path": str(self.path),
             "title": self.title,
-            "kind": self.kind,
+            "note_type": self.note_type,
             "source_url": self.source_url,
             "preview": self.preview,
         }
@@ -53,7 +53,7 @@ class MigrationPlanner:
                 MigrationCandidate(
                     path=path,
                     title=title,
-                    kind="skill" if path.name.casefold() == "skill.md" else "note",
+                    note_type="skill" if path.name.casefold() == "skill.md" else "concept",
                     source_url=path.as_uri(),
                     preview=preview,
                 )
@@ -74,7 +74,7 @@ class MigrationPlanner:
                 continue
             proposal = self.service.prepare_input(
                 str(candidate.path),
-                kind=candidate.kind,
+                note_type=candidate.note_type,
                 title=candidate.title,
                 summary=candidate.preview,
                 tags=["migration-pilot"],
@@ -86,4 +86,8 @@ class MigrationPlanner:
             "proposal_ids": created,
             "skipped_existing": skipped,
             "source_files_modified": 0,
+            # Imports arrive without aliases or maps on purpose: each one has to be
+            # curated before it can be committed, which is what keeps a bulk import
+            # from dumping unfindable notes into the library.
+            "requires_curation_before_commit": True,
         }

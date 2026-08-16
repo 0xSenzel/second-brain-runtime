@@ -6,6 +6,7 @@ import sys
 
 from .api import BrainAPI
 from .migration import MigrationPlanner
+from .models import NOTE_TYPES
 
 
 def parser() -> argparse.ArgumentParser:
@@ -16,11 +17,20 @@ def parser() -> argparse.ArgumentParser:
     commands.add_parser("init", help="Create the vault layout")
     prepare = commands.add_parser("prepare", help="Prepare a capture for review")
     prepare.add_argument("input", help="Text, URL, or local file path")
-    prepare.add_argument("--kind")
+    prepare.add_argument("--type", dest="note_type", default="concept",
+                         choices=sorted(NOTE_TYPES), help="Decides the folder")
     prepare.add_argument("--title")
     prepare.add_argument("--summary", default="")
     prepare.add_argument("--tag", action="append", default=[])
+    prepare.add_argument("--alias", action="append", default=[])
+    prepare.add_argument("--map", action="append", default=[], dest="maps")
+    prepare.add_argument("--destination", default="", help="Optional path inside the type's folder")
+    prepare.add_argument("--creator", default="", help="Source creator, kept as provenance")
     prepare.add_argument("--connections", default="[]", help="JSON array of typed connections")
+
+    tags = commands.add_parser("register-tags", help="Add tags to the controlled vocabulary")
+    tags.add_argument("tag", nargs="+")
+    commands.add_parser("validate", help="Check every note against the structural rules")
 
     approve = commands.add_parser("approve", help="Approve and save a pending proposal")
     approve.add_argument("proposal_id")
@@ -54,12 +64,20 @@ def main(argv: list[str] | None = None) -> None:
         elif args.command == "prepare":
             result = api.prepare_save(
                 content_or_url=args.input,
-                kind=args.kind,
+                note_type=args.note_type,
                 title=args.title,
                 summary=args.summary,
                 tags=args.tag,
+                aliases=args.alias,
+                maps=args.maps,
+                destination=args.destination,
+                source_creator=args.creator,
                 connections=json.loads(args.connections),
             )
+        elif args.command == "register-tags":
+            result = api.register_tags(args.tag)
+        elif args.command == "validate":
+            result = api.validate()
         elif args.command == "approve":
             result = api.commit_save(args.proposal_id, approved=True)
         elif args.command == "reject":

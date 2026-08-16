@@ -22,6 +22,12 @@ class TinyEmbedder:
 
 
 def save(service: BrainService, **kwargs):
+    """Commit a note, filling in whatever structural metadata the test did not specify."""
+    kwargs.setdefault("note_type", "concept")
+    kwargs.setdefault("summary", kwargs.get("content", "")[:80])
+    kwargs.setdefault("tags", ["testing", "fixture"])
+    kwargs.setdefault("aliases", [kwargs["title"] + " alt", kwargs["title"] + " alias"])
+    kwargs.setdefault("maps", ["Test Map"])
     proposal = service.prepare_save(**kwargs)
     return service.commit_save(proposal.id)
 
@@ -31,21 +37,21 @@ def test_index_excludes_pending_and_follows_graph_in_both_directions(tmp_path: P
     service = BrainService(vault)
     save(
         service,
-        kind="note",
+        note_type="concept",
         content="Visual hierarchy and accessibility improve interface clarity.",
         title="UI Design",
         summary="Principles for clear and accessible interfaces.",
     )
     save(
         service,
-        kind="skill",
+        note_type="skill",
         content="A repeatable interface review workflow.",
         title="Frontend Critique Skill",
         summary="Reviews interfaces using saved design principles.",
         connections=[{"relation": "uses", "target": "UI Design", "reason": "Review standard"}],
     )
     pending = service.prepare_save(
-        kind="prompt",
+        note_type="prompt",
         content="Secret pending accessibility prompt",
         title="Pending Prompt",
     )
@@ -54,7 +60,8 @@ def test_index_excludes_pending_and_follows_graph_in_both_directions(tmp_path: P
     result = index.reindex()
     hits = index.search("visual hierarchy accessibility", limit=5, hops=1)
 
-    assert result["indexed_notes"] == 4  # two distilled notes plus two raw sources
+    # Two distilled notes, their two raw sources, and the map they were filed on.
+    assert result["indexed_notes"] == 5
     assert all(hit.title != "Pending Prompt" for hit in hits)
     assert hits[0].title == "UI Design"
     assert any(hit.title == "Frontend Critique Skill" and hit.via_graph for hit in hits)
@@ -66,7 +73,7 @@ def test_context_is_cited_budgeted_and_read_only(tmp_path: Path) -> None:
     service = BrainService(vault)
     save(
         service,
-        kind="prompt",
+        note_type="prompt",
         content="Review a UI for hierarchy, spacing, accessibility, and responsiveness.",
         title="Frontend Design Critique",
         summary="A concise checklist for interface reviews.",
@@ -80,7 +87,7 @@ def test_context_is_cited_budgeted_and_read_only(tmp_path: Path) -> None:
 
     assert bundle["estimated_tokens"] <= 120
     assert "Frontend Design Critique" in bundle["context"]
-    assert "Knowledge/" not in bundle["context"]  # this item belongs in Prompts
+    assert "Notes/" not in bundle["context"]  # this item belongs in Prompts
     assert "Prompts/Frontend Design Critique.md" in bundle["context"]
     assert "https://example.com/prompt" in bundle["context"]
     assert before == {path: path.read_bytes() for path in vault.rglob("*.md")}
@@ -89,7 +96,7 @@ def test_context_is_cited_budgeted_and_read_only(tmp_path: Path) -> None:
 def test_reindex_is_incremental_and_removes_deleted_notes(tmp_path: Path) -> None:
     vault = tmp_path / "vault"
     service = BrainService(vault)
-    item = save(service, kind="note", content="Graph retrieval", title="Graph Retrieval")
+    item = save(service, note_type="concept", content="Graph retrieval", title="Graph Retrieval")
     index = BrainIndex(vault, embedder=TinyEmbedder())
 
     first = index.reindex()
@@ -106,7 +113,7 @@ def test_reindex_is_incremental_and_removes_deleted_notes(tmp_path: Path) -> Non
 def test_reindex_backfills_vectors_when_embeddings_are_enabled_later(tmp_path: Path) -> None:
     vault = tmp_path / "vault"
     service = BrainService(vault)
-    save(service, kind="note", content="Local semantic retrieval", title="Semantic Search")
+    save(service, note_type="concept", content="Local semantic retrieval", title="Semantic Search")
 
     lexical_only = BrainIndex(vault)
     lexical_only.reindex()
