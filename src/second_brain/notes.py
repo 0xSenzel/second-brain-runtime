@@ -11,6 +11,10 @@ from .models import Connection, Proposal
 
 FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n?", re.DOTALL)
 
+# Where commit_save adds a newly approved note inside its map. Entries are grouped by
+# job to be done; new ones land here until a human files them under a better heading.
+MAP_INBOX_HEADING = "## Recently added"
+
 
 def safe_filename(title: str) -> str:
     normalized = unicodedata.normalize("NFC", title).strip()
@@ -55,6 +59,13 @@ def render_review(proposal: Proposal) -> str:
 
 {proposal.summary or "No summary supplied yet."}
 
+## Proposed metadata
+
+- Type: `{proposal.note_type}`
+- Tags: {", ".join(proposal.tags) or "none"}
+- Aliases: {", ".join(proposal.aliases) or "none"}
+- Maps: {", ".join(proposal.maps) or "none"}
+
 ## Proposed connections
 
 {render_connections(proposal.connections)}
@@ -72,7 +83,7 @@ def render_review(proposal: Proposal) -> str:
             "proposal_id": proposal.id,
             "type": "review",
             "status": proposal.status,
-            "kind": proposal.kind,
+            "note_type": proposal.note_type,
             "title": proposal.title,
             "target_path": proposal.target_path,
             "source_url": proposal.source_url or None,
@@ -94,25 +105,33 @@ def render_source(proposal: Proposal, note_id: str) -> str:
 
 {proposal.content}
 """
-    return dump_note(
-        {
-            "id": f"source-{proposal.id}",
-            "type": "source",
-            "source_kind": proposal.kind,
-            "status": "approved",
-            "captured": proposal.created_at,
-            "source_url": proposal.source_url or None,
-            "distilled_note": f"[[{Path(proposal.target_path).stem}]]",
-        },
-        body,
-    )
+    frontmatter: dict[str, Any] = {
+        "id": f"source-{proposal.id}",
+        "type": "source",
+        "status": "approved",
+        "captured": proposal.created_at,
+        "distilled_note": f"[[{Path(proposal.target_path).stem}]]",
+    }
+    if proposal.source_kind:
+        frontmatter["source_kind"] = proposal.source_kind
+    if proposal.source_creator:
+        frontmatter["source_creator"] = proposal.source_creator
+    # An absent URL omits the key rather than writing `null`, which reads as a value.
+    if proposal.source_url:
+        frontmatter["source_url"] = proposal.source_url
+    return dump_note(frontmatter, body)
 
 
 def render_knowledge(proposal: Proposal, note_id: str) -> str:
     source_name = Path(proposal.source_path).stem
-    source_line = f"- Original: [[{source_name}]]"
+    source_lines = [f"- Original: [[{source_name}]]"]
     if proposal.source_url:
-        source_line += f"\n- URL: {proposal.source_url}"
+        source_lines.append(f"- URL: {proposal.source_url}")
+    if proposal.source_creator:
+        source_lines.append(f"- Creator: {proposal.source_creator}")
+
+    maps_lines = "\n".join(f"- [[{name}]]" for name in proposal.maps) or "- None yet"
+
     body = f"""# {proposal.title}
 
 ## Summary
@@ -123,29 +142,76 @@ def render_knowledge(proposal: Proposal, note_id: str) -> str:
 
 {render_connections(proposal.connections)}
 
+## Maps
+
+{maps_lines}
+
 ## Source
 
-{source_line}
+{chr(10).join(source_lines)}
 """
-    note_type = (
-        "prompt"
-        if proposal.kind == "prompt"
-        else "skill"
-        if proposal.kind == "skill"
-        else "resource"
-        if proposal.kind == "resource" or proposal.kind.endswith("-resource")
-        else "concept"
-    )
+    frontmatter: dict[str, Any] = {
+        "id": note_id,
+        "type": proposal.note_type,
+        "status": "approved",
+        "created": proposal.created_at,
+        "updated": proposal.created_at,
+        "title": proposal.title,
+        "aliases": list(proposal.aliases),
+        "tags": list(proposal.tags),
+        "maps": list(proposal.maps),
+    }
+    if proposal.source_kind:
+        frontmatter["source_kind"] = proposal.source_kind
+    if proposal.source_creator:
+        frontmatter["source_creator"] = proposal.source_creator
+    if proposal.source_url:
+        frontmatter["source_url"] = proposal.source_url
+    frontmatter["source_note"] = f"[[{source_name}]]"
+    frontmatter["source_id"] = f"source-{proposal.id}"
+    return dump_note(frontmatter, body)
+
+
+def render_map(name: str, created_at: str, *, description: str = "") -> str:
+    """A map is an indexable note whose headings are jobs to be done."""
+    body = f"""# {name}
+
+{description or f"Notes for {name}, grouped by the job each one does."}
+
+{MAP_INBOX_HEADING}
+"""
     return dump_note(
         {
-            "id": note_id,
-            "type": note_type,
+            "id": f"map-{re.sub(r'[^a-z0-9]+', '-', name.lower()).strip('-')}",
+            "type": "map",
             "status": "approved",
-            "created": proposal.created_at,
-            "updated": proposal.created_at,
-            "tags": proposal.tags,
-            "source_url": proposal.source_url or None,
-            "source_id": f"source-{proposal.id}",
+            "created": created_at,
+            "updated": created_at,
+            "title": name,
+            "aliases": [f"{name} index", f"{name} map"],
+            "tags": ["map"],
         },
         body,
     )
+
+
+def map_entry(title: str, summary: str) -> str:
+    first_sentence = re.split(r"(?<=[.!?])\s+", summary.strip())[0] if summary.strip() else ""
+    return f"- [[{title}]] — {first_sentence}" if first_sentence else f"- [[{title}]]"
+
+
+def append_to_map(text: str, title: str, summary: str) -> str:
+    """Add a note to a map under the inbox heading, once.
+
+    Idempotent by note title so re-approving a revision does not duplicate the entry,
+    and so an entry a human has already filed under a better heading stays put.
+    """
+    if f"[[{title}]]" in text:
+        return text
+    entry = map_entry(title, summary)
+    if MAP_INBOX_HEADING in text:
+        head, _, tail = text.partition(MAP_INBOX_HEADING)
+        lines = tail.lstrip("\n").rstrip()
+        body = f"{lines}\n{entry}" if lines else entry
+        return f"{head}{MAP_INBOX_HEADING}\n\n{body}\n"
+    return f"{text.rstrip()}\n\n{MAP_INBOX_HEADING}\n\n{entry}\n"

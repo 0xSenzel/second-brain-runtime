@@ -269,7 +269,13 @@ class BrainIndex:
                     excerpts.setdefault(node_id, row["text"])
 
             for node_id in list(scores):
-                if nodes[node_id]["note_type"] != "source":
+                note_type = nodes[node_id]["note_type"]
+                if note_type == "map":
+                    # A map lists the title and summary of every note it indexes, so it
+                    # matches almost any query about its subject and would crowd out the
+                    # notes themselves. Keep it findable for orientation, below them.
+                    scores[node_id] -= 0.03
+                elif note_type != "source":
                     # Distilled notes are the default answer surface. Raw sources
                     # remain searchable and citable, but should not displace the
                     # reviewed summary when both match the same query.
@@ -290,6 +296,10 @@ class BrainIndex:
                     ):
                         neighbor = edge["target_id"] if edge["source_id"] == seed_id else edge["source_id"]
                         if not neighbor or neighbor == seed_id or neighbor not in nodes:
+                            continue
+                        if nodes[neighbor]["note_type"] == "map":
+                            # Every note on a map links to it, so expanding through one
+                            # would make all of them look related to each other.
                             continue
                         graph_score = seed_score * 0.55
                         graph_meta.setdefault(
