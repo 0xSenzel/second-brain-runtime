@@ -28,6 +28,7 @@ class BrainAPI:
         *,
         content_or_url: str,
         note_type: str | None = None,
+        domain: str | None = None,
         title: str | None = None,
         summary: str = "",
         tags: list[str] | None = None,
@@ -40,6 +41,7 @@ class BrainAPI:
         proposal = self.service.prepare_input(
             content_or_url,
             note_type=note_type,
+            domain=domain,
             title=title,
             summary=summary,
             tags=tags,
@@ -57,6 +59,7 @@ class BrainAPI:
             "status": proposal.status,
             "title": proposal.title,
             "note_type": proposal.note_type,
+            "domain": proposal.domain,
             "destination": proposal.target_path,
             "source_destination": proposal.source_path,
             "summary": proposal.summary,
@@ -106,6 +109,7 @@ class BrainAPI:
                 "proposal_id": proposal.id,
                 "title": proposal.title,
                 "note_type": proposal.note_type,
+                "domain": proposal.domain,
                 "destination": proposal.target_path,
                 "review_note": f"Reviews/Pending/{proposal.id}.md",
             }

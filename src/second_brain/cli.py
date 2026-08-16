@@ -6,7 +6,7 @@ import sys
 
 from .api import BrainAPI
 from .migration import MigrationPlanner
-from .models import NOTE_TYPES
+from .models import DOMAINS, NOTE_TYPES
 
 
 def parser() -> argparse.ArgumentParser:
@@ -18,7 +18,9 @@ def parser() -> argparse.ArgumentParser:
     prepare = commands.add_parser("prepare", help="Prepare a capture for review")
     prepare.add_argument("input", help="Text, URL, or local file path")
     prepare.add_argument("--type", dest="note_type", default="concept",
-                         choices=sorted(NOTE_TYPES), help="Decides the folder")
+                         choices=sorted(NOTE_TYPES), help="Decides the type folder")
+    prepare.add_argument("--domain", default="tech", choices=sorted(DOMAINS),
+                         help="Which part of life this belongs to")
     prepare.add_argument("--title")
     prepare.add_argument("--summary", default="")
     prepare.add_argument("--tag", action="append", default=[])
@@ -65,6 +67,7 @@ def main(argv: list[str] | None = None) -> None:
             result = api.prepare_save(
                 content_or_url=args.input,
                 note_type=args.note_type,
+                domain=args.domain,
                 title=args.title,
                 summary=args.summary,
                 tags=args.tag,

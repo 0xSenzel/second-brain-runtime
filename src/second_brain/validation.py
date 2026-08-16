@@ -12,12 +12,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .models import (
+    DOMAINS,
     MIN_ALIASES,
     MIN_MAPS,
     MIN_TAGS,
     NOTE_TYPES,
     TAG_RE,
     ValidationError,
+    validate_domain,
     validate_note_type,
 )
 from .notes import read_note
@@ -37,6 +39,11 @@ def check_proposal(proposal: Proposal, *, registered_tags: set[str]) -> None:
 
     try:
         validate_note_type(proposal.note_type)
+    except ValidationError as error:
+        problems.append(str(error))
+
+    try:
+        validate_domain(proposal.domain)
     except ValidationError as error:
         problems.append(str(error))
 
@@ -96,6 +103,11 @@ def lint_note(metadata: dict[str, Any], *, registered_tags: set[str]) -> list[st
 
     if note_type not in NOTE_TYPES:
         problems.append(f"type {note_type!r} is not one of {sorted(NOTE_TYPES)}")
+
+    if str(metadata.get("domain") or "") not in DOMAINS:
+        problems.append(
+            f"domain {metadata.get('domain')!r} is not one of {sorted(DOMAINS)}"
+        )
 
     tags = [str(tag) for tag in (metadata.get("tags") or [])]
     if len(tags) < MIN_TAGS:

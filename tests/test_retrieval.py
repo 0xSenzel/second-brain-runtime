@@ -24,6 +24,7 @@ class TinyEmbedder:
 def save(service: BrainService, **kwargs):
     """Commit a note, filling in whatever structural metadata the test did not specify."""
     kwargs.setdefault("note_type", "concept")
+    kwargs.setdefault("domain", "tech")
     kwargs.setdefault("summary", kwargs.get("content", "")[:80])
     kwargs.setdefault("tags", ["testing", "fixture"])
     kwargs.setdefault("aliases", [kwargs["title"] + " alt", kwargs["title"] + " alias"])
@@ -87,8 +88,8 @@ def test_context_is_cited_budgeted_and_read_only(tmp_path: Path) -> None:
 
     assert bundle["estimated_tokens"] <= 120
     assert "Frontend Design Critique" in bundle["context"]
-    assert "Notes/" not in bundle["context"]  # this item belongs in Prompts
-    assert "Prompts/Frontend Design Critique.md" in bundle["context"]
+    assert "Tech/Notes/" not in bundle["context"]  # this item belongs in Prompts
+    assert "Tech/Prompts/Frontend Design Critique.md" in bundle["context"]
     assert "https://example.com/prompt" in bundle["context"]
     assert before == {path: path.read_bytes() for path in vault.rglob("*.md")}
 

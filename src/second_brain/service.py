@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .ingest import SourceIngestor
 from .models import (
+    DOMAIN_FOLDER,
     FOLDER_FOR_TYPE,
     MAPS_FOLDER,
     RETIRED_FOLDERS,
@@ -18,8 +19,10 @@ from .models import (
     Proposal,
     SavedItem,
     ValidationError,
+    folder_for,
     normalize_tag,
     validate_destination,
+    validate_domain,
     validate_note_type,
 )
 from .notes import (
@@ -36,7 +39,11 @@ from .validation import check_proposal, lint_vault
 
 # Folders holding distilled notes. Anything that resolves a note by path or URL must
 # search all of them; the old hardcoded list omitted folders and silently duplicated notes.
-CONTENT_FOLDERS = tuple(dict.fromkeys(FOLDER_FOR_TYPE.values())) + (MAPS_FOLDER,)
+CONTENT_FOLDERS = tuple(
+    f"{domain}/{type_folder}"
+    for domain in DOMAIN_FOLDER.values()
+    for type_folder in dict.fromkeys(FOLDER_FOR_TYPE.values())
+) + (MAPS_FOLDER,)
 
 VAULT_FOLDERS = (
     *CONTENT_FOLDERS,
@@ -156,6 +163,7 @@ class BrainService:
         value: str,
         *,
         note_type: str | None = None,
+        domain: str | None = None,
         title: str | None = None,
         summary: str = "",
         tags: Iterable[str] | None = None,
@@ -168,6 +176,7 @@ class BrainService:
         source = SourceIngestor().ingest(value)
         return self.prepare_save(
             note_type=note_type or "concept",
+            domain=domain or "tech",
             content=source.content,
             title=title or source.title,
             summary=summary,
@@ -186,6 +195,7 @@ class BrainService:
         *,
         note_type: str,
         content: str,
+        domain: str = "tech",
         title: str,
         summary: str = "",
         tags: Iterable[str] | None = None,
@@ -200,14 +210,18 @@ class BrainService:
         if not content.strip():
             raise ValidationError("Cannot save empty content")
         note_type = validate_note_type(note_type)
+        domain = validate_domain(domain)
         title = safe_filename(title)
         proposal_id = uuid.uuid4().hex[:12]
         created_at = utc_now()
         parsed_connections = [Connection.from_value(item) for item in (connections or [])]
-        target_path, is_revision = self._target_for(note_type, title, source_url, destination)
+        target_path, is_revision = self._target_for(
+            note_type, domain, title, source_url, destination
+        )
         proposal = Proposal(
             id=proposal_id,
             note_type=note_type,
+            domain=domain,
             title=title,
             summary=summary.strip(),
             content=content.rstrip(),
@@ -309,15 +323,15 @@ class BrainService:
             )
 
     def _target_for(
-        self, note_type: str, title: str, source_url: str, destination: str
+        self, note_type: str, domain: str, title: str, source_url: str, destination: str
     ) -> tuple[str, bool]:
         if source_url:
             existing = self._find_by_source_url(source_url)
             if existing:
                 return existing, True
         if destination:
-            return validate_destination(destination, note_type), False
-        return f"{FOLDER_FOR_TYPE[note_type]}/{title}.md", False
+            return validate_destination(destination, note_type, domain), False
+        return f"{folder_for(domain, note_type)}/{title}.md", False
 
     def _find_by_source_url(self, source_url: str) -> str | None:
         for folder in CONTENT_FOLDERS:

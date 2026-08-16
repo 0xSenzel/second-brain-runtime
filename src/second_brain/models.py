@@ -17,7 +17,7 @@ ALLOWED_RELATIONS = {
 
 # A note's type decides its folder and nothing else. Topic belongs in tags, which are
 # many-to-many; a closed set here is what stops a topic ever becoming a directory again.
-NOTE_TYPES = {"concept", "prompt", "skill", "project"}
+NOTE_TYPES = {"concept", "prompt", "skill", "project", "essay"}
 
 # The folder for each type. One entry per type, no exceptions and no nesting by subject.
 FOLDER_FOR_TYPE = {
@@ -25,7 +25,24 @@ FOLDER_FOR_TYPE = {
     "prompt": "Prompts",
     "skill": "Skills",
     "project": "Projects",
+    # Writing of your own, kept apart from material captured from someone else.
+    "essay": "Essays",
 }
+
+# The second axis: which part of life the note belongs to. Closed like NOTE_TYPES and for
+# the same reason — two orthogonal closed sets give a predictable grid, whereas one field
+# meaning both things is what produced the folder sprawl this replaced. Adding a domain is
+# a deliberate edit here, not something a save can do on its own.
+DOMAINS = {"personal", "tech"}
+
+DOMAIN_FOLDER = {
+    "personal": "Personal",
+    "tech": "Tech",
+}
+
+
+def folder_for(domain: str, note_type: str) -> str:
+    return f"{DOMAIN_FOLDER[domain]}/{FOLDER_FOR_TYPE[note_type]}"
 
 MAPS_FOLDER = "Maps"
 SOURCES_FOLDER = "Sources"
@@ -76,7 +93,17 @@ def validate_note_type(value: str) -> str:
     return note_type
 
 
-def validate_destination(destination: str, note_type: str) -> str:
+def validate_domain(value: str) -> str:
+    domain = str(value or "").strip().lower()
+    if domain not in DOMAINS:
+        raise ValidationError(
+            f"Unsupported domain {value!r}. domain must be one of {sorted(DOMAINS)}. "
+            "Adding a new one is an edit to models.py, not a choice made at save time."
+        )
+    return domain
+
+
+def validate_destination(destination: str, note_type: str, domain: str) -> str:
     """A caller-chosen path is honoured only inside the folder its type owns."""
     candidate = str(destination or "").strip().replace("\\", "/").lstrip("/")
     if not candidate:
@@ -86,11 +113,11 @@ def validate_destination(destination: str, note_type: str) -> str:
     parts = [part for part in candidate.split("/") if part]
     if any(part in {"..", "."} for part in parts):
         raise ValidationError(f"destination must stay inside the vault, got {destination!r}")
-    root = FOLDER_FOR_TYPE[note_type]
-    if parts[0] != root:
+    root = folder_for(domain, note_type)
+    if "/".join(parts[:2]) != root:
         raise ValidationError(
-            f"destination {destination!r} does not match note_type {note_type!r}, "
-            f"which lives under {root}/."
+            f"destination {destination!r} does not match domain {domain!r} and "
+            f"note_type {note_type!r}, which live under {root}/."
         )
     return "/".join(parts)
 
@@ -119,6 +146,7 @@ class Connection:
 class Proposal:
     id: str
     note_type: str
+    domain: str
     title: str
     summary: str
     content: str
@@ -151,6 +179,7 @@ class Proposal:
             data.setdefault("note_type", LEGACY_KIND_TO_TYPE.get(legacy_kind, "concept"))
             data.setdefault("source_kind", legacy_kind)
         data.setdefault("note_type", "concept")
+        data.setdefault("domain", "tech")
         data.setdefault("source_kind", "")
         data.setdefault("source_creator", "")
         data.setdefault("aliases", [])

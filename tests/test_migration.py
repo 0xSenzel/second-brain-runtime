@@ -19,7 +19,7 @@ def test_migration_is_copy_only_bounded_and_staged_for_review(tmp_path: Path) ->
     assert len(preview) == 3
     assert applied["created_proposals"] == 3
     assert len(service.list_pending()) == 3
-    assert not list((service.vault / "Notes").glob("Note *.md"))
+    assert not list((service.vault / "Tech" / "Notes").glob("Note *.md"))
     assert original == {path: path.read_bytes() for path in source.rglob("*.md")}
 
 

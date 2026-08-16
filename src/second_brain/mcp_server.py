@@ -27,14 +27,20 @@ mcp = FastMCP(
         "proposal in the current conversation. Never write vault files by any "
         "other means, and never let a normal question change a Markdown file.\n"
         "\n"
-        "THE LAYOUT IS FIXED. A note's folder is decided by its note_type and "
-        "nothing else:\n"
-        "  concept -> Notes/    prompt -> Prompts/\n"
-        "  skill   -> Skills/   project -> Projects/\n"
+        "THE LAYOUT IS FIXED. A note's path is <Domain>/<Type>/, decided by two "
+        "closed sets and nothing else.\n"
+        "  domain:    personal -> Personal/    tech -> Tech/\n"
+        "  note_type: concept -> Notes/        prompt  -> Prompts/\n"
+        "             skill   -> Skills/       project -> Projects/\n"
+        "             essay   -> Essays/  (your own writing, not captured material)\n"
+        "So a personal essay is Personal/Essays/, a saved prompt about code is "
+        "Tech/Prompts/. Use domain 'personal' for health, training, self-reflection "
+        "and style; 'tech' for tooling, code, prompts about building things, and "
+        "captured technical reference.\n"
         "Subject matter NEVER becomes a folder. A note about frontend design is "
         "note_type 'concept' with a 'frontend' tag — not a Frontend folder. Do not "
-        "invent note types; anything outside those four is rejected. Sources are "
-        "flat in Sources/ and addressed by ID, never grouped by subject.\n"
+        "invent note types or domains; anything outside those sets is rejected. "
+        "Sources are flat in Sources/ and addressed by ID, never grouped by subject.\n"
         "\n"
         "Every saved note needs, or the commit is refused:\n"
         "  - a non-empty summary, which is what the search index ranks on;\n"
@@ -75,6 +81,7 @@ def _api() -> BrainAPI:
 def brain_prepare_save(
     content_or_url: str,
     note_type: str = "concept",
+    domain: str = "tech",
     title: str = "",
     summary: str = "",
     tags_json: str = "[]",
@@ -86,8 +93,10 @@ def brain_prepare_save(
 ) -> str:
     """Stage text, a URL, or a local file for review. This never writes approved knowledge.
 
-    note_type must be one of: concept, prompt, skill, project. It decides the folder.
-    Subject matter goes in tags_json, never in note_type or destination.
+    note_type must be one of: concept, prompt, skill, project, essay.
+    domain must be one of: personal, tech.
+    Together they decide the folder: <Domain>/<Type>/. Subject matter goes in
+    tags_json, never in note_type, domain, or destination.
     maps_json names the index notes this belongs on; a missing map blocks the commit.
     destination is optional and must sit inside the folder the note_type owns.
     Check blocking_problems in the response before showing the proposal to the user.
@@ -95,6 +104,7 @@ def brain_prepare_save(
     result = _api().prepare_save(
         content_or_url=content_or_url,
         note_type=note_type or None,
+        domain=domain or None,
         title=title or None,
         summary=summary,
         tags=json.loads(tags_json),

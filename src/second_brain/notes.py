@@ -61,6 +61,7 @@ def render_review(proposal: Proposal) -> str:
 
 ## Proposed metadata
 
+- Domain: `{proposal.domain}`
 - Type: `{proposal.note_type}`
 - Tags: {", ".join(proposal.tags) or "none"}
 - Aliases: {", ".join(proposal.aliases) or "none"}
@@ -84,6 +85,7 @@ def render_review(proposal: Proposal) -> str:
             "type": "review",
             "status": proposal.status,
             "note_type": proposal.note_type,
+            "domain": proposal.domain,
             "title": proposal.title,
             "target_path": proposal.target_path,
             "source_url": proposal.source_url or None,
@@ -153,6 +155,7 @@ def render_knowledge(proposal: Proposal, note_id: str) -> str:
     frontmatter: dict[str, Any] = {
         "id": note_id,
         "type": proposal.note_type,
+        "domain": proposal.domain,
         "status": "approved",
         "created": proposal.created_at,
         "updated": proposal.created_at,
