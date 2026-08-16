@@ -48,8 +48,9 @@ MAPS_FOLDER = "Maps"
 SOURCES_FOLDER = "Sources"
 TAG_REGISTRY_PATH = f"{MAPS_FOLDER}/Tag Registry.md"
 
-# Folders the old kind-to-folder mapping created. Retired: removed at startup when empty.
-RETIRED_FOLDERS = ("Inbox", "Knowledge", "Resources")
+# Folders earlier layouts created at the top level, before domain became the first path
+# segment. Retired: removed at startup when empty, left alone when they still hold notes.
+RETIRED_FOLDERS = ("Inbox", "Knowledge", "Resources", "Notes", "Prompts", "Skills", "Projects", "Essays")
 
 MIN_TAGS = 2
 MIN_ALIASES = 2
