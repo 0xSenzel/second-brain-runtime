@@ -123,3 +123,50 @@ def test_graph_hops_do_not_travel_through_a_map(tmp_path: Path) -> None:
     hits = index.search("retrieval latency", limit=6, hops=1)
 
     assert "Tech/Notes/Unrelated Beta.md" not in [hit.path for hit in hits]
+
+
+# --- ranking must not reward length ---------------------------------------------------
+
+
+def test_a_long_source_does_not_outrank_its_own_short_note(tmp_path: Path) -> None:
+    """Scores once summed over every matching chunk, so the longest file always won."""
+    vault = tmp_path / "vault"
+    service = BrainService(vault)
+    long_body = "\n\n".join(
+        f"Section {n}: soreness, microtears and hypertrophy explained at length. " * 12
+        for n in range(12)
+    )
+    _commit(
+        service,
+        "Why microtears do not drive growth",
+        content=long_body,
+        summary="Soreness and microtears do not drive hypertrophy.",
+    )
+    index = BrainIndex(vault, embedder=None)
+    index.reindex()
+
+    hits = index.search("soreness microtears hypertrophy", limit=5, hops=1)
+
+    assert hits[0].note_type != "source", (
+        f"a raw source outranked its distilled note: {[(h.note_type, h.path) for h in hits]}"
+    )
+    assert hits[0].path == "Tech/Notes/Why microtears do not drive growth.md"
+
+
+def test_graph_scores_do_not_cascade_between_seeds(tmp_path: Path) -> None:
+    """Seed scores were read from a dict being mutated inside the same loop."""
+    vault = tmp_path / "vault"
+    service = BrainService(vault)
+    _commit(service, "Alpha", content="Retrieval latency budgets and caching.")
+    index = BrainIndex(vault, embedder=None)
+    index.reindex()
+
+    hits = index.search("retrieval latency", limit=6, hops=1)
+
+    direct = [h for h in hits if not h.via_graph]
+    hopped = [h for h in hits if h.via_graph]
+    assert direct, "expected at least one direct match"
+    if hopped:
+        assert max(h.score for h in hopped) <= max(h.score for h in direct), (
+            "a graph neighbour outscored every direct match"
+        )

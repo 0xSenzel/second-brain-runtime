@@ -244,9 +244,17 @@ class BrainIndex:
             scores: dict[str, float] = {}
             excerpts: dict[str, str] = {}
 
+            # Reciprocal rank fusion combines the *arms* of the search, taking each
+            # document's best rank within an arm. Summing every matching chunk instead
+            # scored documents by length: a raw source runs many times longer than the
+            # note distilled from it, so it accumulated more terms and always won.
             lexical = self._lexical(db, query, limit=max(20, limit * 4))
+            seen_lexical: set[str] = set()
             for rank, row in enumerate(lexical, 1):
                 node_id = row["node_id"]
+                if node_id in seen_lexical:
+                    continue
+                seen_lexical.add(node_id)
                 scores[node_id] = scores.get(node_id, 0.0) + 1.0 / (60 + rank)
                 excerpts.setdefault(node_id, row["text"])
 
@@ -261,10 +269,14 @@ class BrainIndex:
                     key=lambda item: item[0],
                     reverse=True,
                 )[: max(20, limit * 4)]
+                seen_semantic: set[str] = set()
                 for rank, (similarity, row) in enumerate(semantic, 1):
                     if similarity <= 0:
                         continue
                     node_id = row["node_id"]
+                    if node_id in seen_semantic:
+                        continue
+                    seen_semantic.add(node_id)
                     scores[node_id] = scores.get(node_id, 0.0) + 1.0 / (60 + rank)
                     excerpts.setdefault(node_id, row["text"])
 
@@ -286,9 +298,12 @@ class BrainIndex:
                 ranked_seeds = sorted(
                     scores.items(), key=lambda item: item[1], reverse=True
                 )[:limit]
-                seed_ids = [item[0] for item in ranked_seeds]
-                for seed_id in seed_ids:
-                    seed_score = scores[seed_id]
+                # Seeds are scored from a snapshot. Reading the live dict let a score
+                # awarded by one seed be re-propagated when that neighbour came up as a
+                # later seed, compounding a single hop into an arbitrarily large one.
+                direct_scores = dict(scores)
+                for seed_id, _ in ranked_seeds:
+                    seed_score = direct_scores[seed_id]
                     for edge in db.execute(
                         "SELECT source_id,target_id,relation,reason FROM edges "
                         "WHERE source_id=? OR target_id=?",
