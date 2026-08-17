@@ -103,6 +103,8 @@ def brain_prepare_save(
     maps_json: str = "[]",
     connections_json: str = "[]",
     destination: str = "",
+    source_url: str = "",
+    source_kind: str = "",
     source_creator: str = "",
 ) -> str:
     """Stage text, a URL, or a local file for review. This never writes approved knowledge.
@@ -113,6 +115,10 @@ def brain_prepare_save(
     tags_json, never in note_type, domain, or destination.
     maps_json names the index notes this belongs on; a missing map blocks the commit.
     destination is optional and must sit inside the folder the note_type owns.
+    When the material was captured to a scratch file, pass the canonical page URL
+    as source_url and what it is as source_kind (e.g. douyin-video, tiktok-video).
+    Otherwise provenance is derived from content_or_url and records a file:// path
+    that is local to this container and deleted hours later.
     Check blocking_problems in the response before showing the proposal to the user.
     """
     result = _api().prepare_save(
@@ -126,6 +132,8 @@ def brain_prepare_save(
         maps=json.loads(maps_json),
         connections=json.loads(connections_json),
         destination=destination,
+        source_url=source_url,
+        source_kind=source_kind,
         source_creator=source_creator,
     )
     return json.dumps(result, ensure_ascii=False)

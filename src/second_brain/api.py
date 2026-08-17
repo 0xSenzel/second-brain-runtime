@@ -36,6 +36,8 @@ class BrainAPI:
         maps: list[str] | None = None,
         connections: list[dict[str, str]] | None = None,
         destination: str = "",
+        source_url: str = "",
+        source_kind: str = "",
         source_creator: str = "",
     ) -> dict[str, Any]:
         proposal = self.service.prepare_input(
@@ -49,6 +51,8 @@ class BrainAPI:
             maps=maps,
             connections=connections,
             destination=destination,
+            source_url=source_url,
+            source_kind=source_kind,
             source_creator=source_creator,
         )
         # Report the rule violations now, at proposal time, so they are visible in the

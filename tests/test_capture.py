@@ -421,3 +421,45 @@ def test_a_long_but_legitimate_summary_is_accepted(tmp_path: Path) -> None:
     service.commit_save(proposal.id)
 
     assert (vault / proposal.target_path).exists()
+
+
+def test_prepare_input_keeps_the_canonical_source_url(tmp_path: Path) -> None:
+    """Capture writes the material to a scratch file and passes that path in.
+
+    Without an override the ingestor records the scratch path as provenance, so
+    the note points at a file that is local to the capturing container and is
+    deleted hours later. The canonical URL must win.
+    """
+    vault = tmp_path / "vault"
+    service = BrainService(vault)
+    scratch = tmp_path / "7654216649075068196-source.md"
+    scratch.write_text("# Captured\n\nBody of the captured post.\n", encoding="utf-8")
+
+    proposal = service.prepare_input(
+        str(scratch),
+        note_type="concept",
+        domain="tech",
+        title="AI tutor workflow",
+        summary="Use AI as an interactive tutor rather than a summariser.",
+        tags=["ai-learning", "mastery-learning"],
+        aliases=["AI tutor", "AI 交互式学习法"],
+        maps=["AI Coding Tools"],
+        source_url="https://www.douyin.com/video/7654216649075068196",
+        source_kind="douyin-video",
+        source_creator="阿韬NEX",
+    )
+
+    assert proposal.source_url == "https://www.douyin.com/video/7654216649075068196"
+    assert proposal.source_kind == "douyin-video"
+    assert not proposal.source_url.startswith("file://")
+
+
+def test_prepare_input_still_derives_source_url_when_not_given(tmp_path: Path) -> None:
+    """The override is optional; ingesting a real URL must keep working."""
+    vault = tmp_path / "vault"
+    service = BrainService(vault)
+    scratch = tmp_path / "note.md"
+    scratch.write_text("# Captured\n\nBody.\n", encoding="utf-8")
+
+    proposal = service.prepare_input(str(scratch), title="Local capture")
+    assert proposal.source_url.startswith("file://")

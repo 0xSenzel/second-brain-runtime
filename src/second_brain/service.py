@@ -176,9 +176,16 @@ class BrainService:
         maps: Iterable[str] | None = None,
         connections: Iterable[Connection | dict] | None = None,
         destination: str = "",
+        source_url: str = "",
+        source_kind: str = "",
         source_creator: str = "",
     ) -> Proposal:
         source = SourceIngestor().ingest(value)
+        # A caller that captured the material itself knows where it really came
+        # from; the ingestor can only describe what it was handed. When content
+        # arrives as a scratch file, deriving provenance from that path records a
+        # file:// URL that is local to the capturing process and deleted hours
+        # later, so an explicit canonical URL wins over the derived one.
         return self.prepare_save(
             note_type=note_type or "concept",
             domain=domain or "tech",
@@ -189,8 +196,8 @@ class BrainService:
             aliases=aliases,
             maps=maps,
             connections=connections,
-            source_url=source.source_url,
-            source_kind=source.kind,
+            source_url=source_url.strip() or source.source_url,
+            source_kind=source_kind.strip() or source.kind,
             source_creator=source_creator,
             destination=destination,
         )
