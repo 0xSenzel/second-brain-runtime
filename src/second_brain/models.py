@@ -45,10 +45,14 @@ def folder_for(domain: str, note_type: str) -> str:
     return f"{DOMAIN_FOLDER[domain]}/{FOLDER_FOR_TYPE[note_type]}"
 
 # The layout the code expects, stamped into the vault so the two can be compared.
-# Bump this whenever a change would leave existing notes in the wrong place:
+# Bump when a change would leave existing notes in the wrong place, or when an older
+# runtime must be stopped from writing to a vault this version has touched:
 #   1 — flat Prompts/ Skills/ Knowledge/ Resources/ Projects/, routed by a single `kind`
 #   2 — <Domain>/<Type>/, closed sets, structure enforced at commit
-SCHEMA_VERSION = 2
+#   3 — same folders as 2; the stamp gained axis validation and dropped its timestamp,
+#       and runtimes older than this reorganise a vault before checking the stamp, so
+#       they must not be allowed to write here
+SCHEMA_VERSION = 3
 
 # Tracked on purpose: it has to travel with the notes, so it cannot live under the
 # gitignored .second-brain/ index that a clone never receives.

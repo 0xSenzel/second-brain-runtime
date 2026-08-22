@@ -69,6 +69,7 @@ code produces, and it is stamped into the vault as `.brain-schema.json`:
 |---------|--------|
 | 1 | Flat `Prompts/ Skills/ Knowledge/ Resources/ Projects/`, routed by a single `kind`. |
 | 2 | `<Domain>/<Type>/`, closed sets, structure enforced at commit. |
+| 3 | Same folders as 2. The stamp gained axis validation and lost its timestamp, and runtimes older than this reorganise a vault before checking the stamp, so they are fenced out. |
 
 The stamp is tracked rather than kept under the gitignored `.second-brain/` index, so it
 travels with a clone. On startup the runtime compares the two:
@@ -83,8 +84,10 @@ layout has moved is harmless, while writing into it puts notes where neither ver
 look for them. Nothing is created, moved, or removed either — opening a vault this code does
 not understand leaves it exactly as it was. `brain doctor` and `brain validate` report it.
 
-Bump `SCHEMA_VERSION` whenever a change would leave existing notes in the wrong place, and
-ship a migration for the vault in the same breath.
+Bump `SCHEMA_VERSION` when a change would leave existing notes in the wrong place, and ship
+the vault migration in the same breath. Also bump when an older runtime must be stopped from
+writing to a vault this version has touched, as with 2 to 3 — that upgrade moves no notes,
+so migrating a v2 vault means deleting `.brain-schema.json` and letting it be re-stamped.
 
 ## Agent tools
 
