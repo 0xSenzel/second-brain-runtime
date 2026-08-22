@@ -79,23 +79,34 @@ class BrainService:
     # -- layout ----------------------------------------------------------------
 
     def _ensure_layout(self) -> None:
+        """Bring the vault to the layout this code expects, if it is ours to change.
+
+        The schema is read first and nothing is created or removed when it disagrees.
+        Reorganising a vault written for a different layout is exactly the damage the
+        stamp exists to prevent, and opening one is a read.
+        """
+        self.vault.mkdir(parents=True, exist_ok=True)
+        self._check_schema()
+        if self._schema_mismatch:
+            return
         for folder in VAULT_FOLDERS:
             (self.vault / folder).mkdir(parents=True, exist_ok=True)
         self.proposal_dir.mkdir(parents=True, exist_ok=True)
         self._retire_old_folders()
-        self._check_schema()
 
     def _retire_old_folders(self) -> None:
-        """Drop the folders the old kind-to-folder mapping created.
+        """Drop the folders earlier layouts created, only when they are truly empty.
 
-        Only when they hold no Markdown, so an unfinished migration is never deleted:
-        a folder with notes still in it is left alone and reported by `doctor`.
+        The guard was once "holds no Markdown", which quietly made attachments
+        collateral: a PDF or an image in a retired folder was deleted because it was
+        not a note. Anything at all inside means the folder is left alone and reported
+        by `doctor`.
         """
         for name in RETIRED_FOLDERS:
             folder = self.vault / name
             if not folder.is_dir():
                 continue
-            if any(folder.rglob("*.md")):
+            if any(child.is_file() for child in folder.rglob("*")):
                 continue
             for child in sorted(folder.rglob("*"), reverse=True):
                 if child.is_dir():
@@ -105,10 +116,10 @@ class BrainService:
             folder.rmdir()
 
     def _check_schema(self) -> None:
-        """Compare the vault's stamp with this code, writing it if absent.
+        """Compare the vault's stamp with this code, writing it only if absent.
 
         Deliberately does not raise: a mismatch must not take retrieval down with it.
-        The writes guard themselves via _require_matching_schema.
+        Writes guard themselves via _require_matching_schema.
         """
         self._schema_mismatch: str | None = None
         path = self.vault / VAULT_SCHEMA_FILE
@@ -116,42 +127,67 @@ class BrainService:
             self._write_schema()
             return
         try:
-            found = int(json.loads(path.read_text(encoding="utf-8"))["schema_version"])
-        except (ValueError, KeyError, TypeError, json.JSONDecodeError):
+            stamp = json.loads(path.read_text(encoding="utf-8"))
+            raw = stamp["schema_version"]
+        except (OSError, ValueError, KeyError, TypeError):
+            # OSError covers the cases this message actually names — an unreadable
+            # file, or a directory sitting where the stamp belongs.
             self._schema_mismatch = (
                 f"{VAULT_SCHEMA_FILE} is unreadable, so the vault's layout cannot be "
                 "confirmed. Delete it to re-stamp if the layout is known good."
             )
             return
-        if found > SCHEMA_VERSION:
+        # bool is an int subclass, and int() would truncate 2.9 to a false match.
+        if isinstance(raw, bool) or not isinstance(raw, int):
             self._schema_mismatch = (
-                f"This vault was written by a newer runtime (schema {found}); this code "
+                f"{VAULT_SCHEMA_FILE} records schema_version {raw!r}, which is not a "
+                "whole number, so the vault's layout cannot be confirmed."
+            )
+            return
+        if raw > SCHEMA_VERSION:
+            self._schema_mismatch = (
+                f"This vault was written by a newer runtime (schema {raw}); this code "
                 f"produces schema {SCHEMA_VERSION}. Update the runtime before saving, or "
                 "notes will be written where neither version looks for them."
             )
-        elif found < SCHEMA_VERSION:
+            return
+        if raw < SCHEMA_VERSION:
             self._schema_mismatch = (
-                f"This vault is on an older schema ({found}); this code produces "
+                f"This vault is on an older schema ({raw}); this code produces "
                 f"{SCHEMA_VERSION}. Migrate the vault before saving, so new notes do not "
                 "land in a layout the existing ones do not use."
             )
-        else:
-            self._write_schema()
+            return
+        # Same version, different axes: the stamp is evidence of disagreement, so it is
+        # reported rather than overwritten by whatever this code happens to believe.
+        for field, expected in (("domains", sorted(DOMAIN_FOLDER)), ("note_types", sorted(FOLDER_FOR_TYPE))):
+            found = stamp.get(field)
+            if found is not None and sorted(found) != expected:
+                self._schema_mismatch = (
+                    f"{VAULT_SCHEMA_FILE} claims schema {raw} but lists {field} "
+                    f"{sorted(found)}, while this code uses {expected}."
+                )
+                return
 
     def _write_schema(self) -> None:
-        (self.vault / VAULT_SCHEMA_FILE).write_text(
-            json.dumps(
-                {
-                    "schema_version": SCHEMA_VERSION,
-                    "domains": sorted(DOMAIN_FOLDER),
-                    "note_types": sorted(FOLDER_FOR_TYPE),
-                    "updated": utc_now(),
-                },
-                indent=2,
-            )
-            + "\n",
-            encoding="utf-8",
-        )
+        """Write the stamp, but only when it would actually change.
+
+        It is a tracked file in the notes repository. Rewriting a timestamp on every
+        open dirtied the working tree on every read, which buries real changes and
+        trains you to discard the file without looking.
+        """
+        path = self.vault / VAULT_SCHEMA_FILE
+        payload = json.dumps(
+            {
+                "schema_version": SCHEMA_VERSION,
+                "domains": sorted(DOMAIN_FOLDER),
+                "note_types": sorted(FOLDER_FOR_TYPE),
+            },
+            indent=2,
+        ) + "\n"
+        if path.exists() and path.read_text(encoding="utf-8") == payload:
+            return
+        path.write_text(payload, encoding="utf-8")
 
     def schema_mismatch(self) -> str | None:
         return self._schema_mismatch
@@ -181,6 +217,7 @@ class BrainService:
 
     def register_tags(self, tags: Iterable[str], *, meanings: dict[str, str] | None = None) -> list[str]:
         """Add tags to the registry. Returns the tags that were newly added."""
+        self._require_matching_schema()
         meanings = meanings or {}
         path = self.vault / TAG_REGISTRY_PATH
         path.parent.mkdir(parents=True, exist_ok=True)

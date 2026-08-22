@@ -82,11 +82,18 @@ change is exactly the kind of edit that spans both — the move to `<Domain>/<Ty
 `.brain-schema.json`. The file is tracked, not kept under the gitignored index, so it
 travels with a clone rather than being regenerated to whatever the local code believes.
 
-Comparison happens in `_check_schema` during layout setup, and deliberately does not raise.
-A mismatch blocks writes through `_require_matching_schema` and leaves retrieval working:
-reading a vault whose layout has moved is harmless, whereas writing into it puts notes
-where neither version will look for them. Both `doctor` and `validate` report the mismatch,
-so the condition is visible before anyone tries to save.
+Comparison happens in `_check_schema`, which runs *before* `_ensure_layout` creates or
+retires anything, and deliberately does not raise. On a mismatch the runtime returns without
+touching the vault at all: reorganising a vault written for a different layout is precisely
+the damage the stamp exists to prevent, and opening one is a read.
+
+A mismatch then blocks writes through `_require_matching_schema` while leaving retrieval
+working, since reading a vault whose layout has moved is harmless. Both `doctor` and
+`validate` report it, so the condition is visible before anyone tries to save.
+
+Retiring a folder requires it to be completely empty, not merely free of Markdown. The
+weaker guard made attachments collateral: a PDF or image left in a retired folder was
+deleted because it was not a note.
 
 ## Retrieval
 

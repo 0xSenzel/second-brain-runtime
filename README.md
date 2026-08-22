@@ -73,13 +73,15 @@ code produces, and it is stamped into the vault as `.brain-schema.json`:
 The stamp is tracked rather than kept under the gitignored `.second-brain/` index, so it
 travels with a clone. On startup the runtime compares the two:
 
-- **Match** — the stamp is refreshed and everything proceeds.
+- **Match** — everything proceeds. The stamp is rewritten only when its content would
+  actually change, so opening the vault never dirties the notes repository.
 - **Vault newer** — it was written by a runtime you have not pulled yet.
 - **Vault older** — it needs migrating to the layout this code produces.
 
 A mismatch blocks writes and leaves reads working, because retrieving from a vault whose
 layout has moved is harmless, while writing into it puts notes where neither version will
-look for them. `brain doctor` and `brain validate` both report it.
+look for them. Nothing is created, moved, or removed either — opening a vault this code does
+not understand leaves it exactly as it was. `brain doctor` and `brain validate` report it.
 
 Bump `SCHEMA_VERSION` whenever a change would leave existing notes in the wrong place, and
 ship a migration for the vault in the same breath.
