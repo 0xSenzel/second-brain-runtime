@@ -71,6 +71,23 @@ source. Otherwise every blocked save would strand its earlier attempt in the que
 Notes edited by hand bypass all of this, so `validation.lint_vault` applies the same rules
 to the whole vault and reports what fails, reachable as `brain_validate` or `brain validate`.
 
+## Schema version
+
+The runtime and the vault are separate repositories. That keeps reusable code apart from
+private writing, but it means either can be rolled back without the other, and a layout
+change is exactly the kind of edit that spans both — the move to `<Domain>/<Type>/` altered
+`models.py` and relocated every note in the same breath.
+
+`SCHEMA_VERSION` names the layout the code produces and is stamped into the vault as
+`.brain-schema.json`. The file is tracked, not kept under the gitignored index, so it
+travels with a clone rather than being regenerated to whatever the local code believes.
+
+Comparison happens in `_check_schema` during layout setup, and deliberately does not raise.
+A mismatch blocks writes through `_require_matching_schema` and leaves retrieval working:
+reading a vault whose layout has moved is harmless, whereas writing into it puts notes
+where neither version will look for them. Both `doctor` and `validate` report the mismatch,
+so the condition is visible before anyone tries to save.
+
 ## Retrieval
 
 Search combines SQLite full-text matching, local `bge-m3` embeddings, and one-hop typed

@@ -59,6 +59,31 @@ they are fixed while it still costs nothing. Re-preparing the same capture retir
 earlier attempt, so a retry does not strand a dead proposal in the queue. Notes edited by
 hand bypass all of this — `brain validate` applies the same rules to the whole vault.
 
+## Schema version
+
+The code and the notes live in separate repositories, so they can move independently and
+nothing else records that they belong together. `models.SCHEMA_VERSION` is the layout this
+code produces, and it is stamped into the vault as `.brain-schema.json`:
+
+| Version | Layout |
+|---------|--------|
+| 1 | Flat `Prompts/ Skills/ Knowledge/ Resources/ Projects/`, routed by a single `kind`. |
+| 2 | `<Domain>/<Type>/`, closed sets, structure enforced at commit. |
+
+The stamp is tracked rather than kept under the gitignored `.second-brain/` index, so it
+travels with a clone. On startup the runtime compares the two:
+
+- **Match** — the stamp is refreshed and everything proceeds.
+- **Vault newer** — it was written by a runtime you have not pulled yet.
+- **Vault older** — it needs migrating to the layout this code produces.
+
+A mismatch blocks writes and leaves reads working, because retrieving from a vault whose
+layout has moved is harmless, while writing into it puts notes where neither version will
+look for them. `brain doctor` and `brain validate` both report it.
+
+Bump `SCHEMA_VERSION` whenever a change would leave existing notes in the wrong place, and
+ship a migration for the vault in the same breath.
+
 ## Agent tools
 
 The MCP server exposes:
@@ -67,7 +92,7 @@ The MCP server exposes:
 - `brain_commit_save` — save only after explicit approval
 - `brain_reject_save` and `brain_pending` — manage the review queue
 - `brain_register_tags` — extend the controlled vocabulary
-- `brain_validate` — check every note against the structural rules
+- `brain_validate` — check every note against the structural rules, including the schema stamp
 - `brain_ask` — compact cited retrieval for answering
 - `brain_find` — matching saved items
 - `brain_neighbors` — typed graph links and backlinks

@@ -4,13 +4,12 @@ import os
 import pathlib
 import re
 import shutil
-
-import os
 import urllib.parse
 from pathlib import Path
 from typing import Any
 
 from .index import BrainIndex, OllamaEmbedder
+from .models import SCHEMA_VERSION
 from .service import BrainService
 
 DEFAULT_VAULT = Path.home() / "Documents" / "second-brain"
@@ -201,6 +200,8 @@ class BrainAPI:
             "database": str(self.index.db_path),
             "registered_tags": len(self.service.registered_tags()),
             "unmigrated_folders": self.service.unmigrated_folders(),
+            "schema_version": SCHEMA_VERSION,
+            "schema_mismatch": self.service.schema_mismatch(),
         }
 
     def _uri(self, path: str) -> str:

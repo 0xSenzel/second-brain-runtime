@@ -14,11 +14,14 @@ from .models import (
     FOLDER_FOR_TYPE,
     MAPS_FOLDER,
     RETIRED_FOLDERS,
+    SCHEMA_VERSION,
     SOURCES_FOLDER,
     TAG_REGISTRY_PATH,
+    VAULT_SCHEMA_FILE,
     Connection,
     Proposal,
     SavedItem,
+    SchemaMismatch,
     ValidationError,
     folder_for,
     normalize_tag,
@@ -80,6 +83,7 @@ class BrainService:
             (self.vault / folder).mkdir(parents=True, exist_ok=True)
         self.proposal_dir.mkdir(parents=True, exist_ok=True)
         self._retire_old_folders()
+        self._check_schema()
 
     def _retire_old_folders(self) -> None:
         """Drop the folders the old kind-to-folder mapping created.
@@ -99,6 +103,62 @@ class BrainService:
                 else:
                     child.unlink()
             folder.rmdir()
+
+    def _check_schema(self) -> None:
+        """Compare the vault's stamp with this code, writing it if absent.
+
+        Deliberately does not raise: a mismatch must not take retrieval down with it.
+        The writes guard themselves via _require_matching_schema.
+        """
+        self._schema_mismatch: str | None = None
+        path = self.vault / VAULT_SCHEMA_FILE
+        if not path.exists():
+            self._write_schema()
+            return
+        try:
+            found = int(json.loads(path.read_text(encoding="utf-8"))["schema_version"])
+        except (ValueError, KeyError, TypeError, json.JSONDecodeError):
+            self._schema_mismatch = (
+                f"{VAULT_SCHEMA_FILE} is unreadable, so the vault's layout cannot be "
+                "confirmed. Delete it to re-stamp if the layout is known good."
+            )
+            return
+        if found > SCHEMA_VERSION:
+            self._schema_mismatch = (
+                f"This vault was written by a newer runtime (schema {found}); this code "
+                f"produces schema {SCHEMA_VERSION}. Update the runtime before saving, or "
+                "notes will be written where neither version looks for them."
+            )
+        elif found < SCHEMA_VERSION:
+            self._schema_mismatch = (
+                f"This vault is on an older schema ({found}); this code produces "
+                f"{SCHEMA_VERSION}. Migrate the vault before saving, so new notes do not "
+                "land in a layout the existing ones do not use."
+            )
+        else:
+            self._write_schema()
+
+    def _write_schema(self) -> None:
+        (self.vault / VAULT_SCHEMA_FILE).write_text(
+            json.dumps(
+                {
+                    "schema_version": SCHEMA_VERSION,
+                    "domains": sorted(DOMAIN_FOLDER),
+                    "note_types": sorted(FOLDER_FOR_TYPE),
+                    "updated": utc_now(),
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+    def schema_mismatch(self) -> str | None:
+        return self._schema_mismatch
+
+    def _require_matching_schema(self) -> None:
+        if self._schema_mismatch:
+            raise SchemaMismatch(self._schema_mismatch)
 
     def unmigrated_folders(self) -> list[str]:
         return [
@@ -219,6 +279,7 @@ class BrainService:
         source_creator: str = "",
         destination: str = "",
     ) -> Proposal:
+        self._require_matching_schema()
         if not content.strip():
             raise ValidationError("Cannot save empty content")
         note_type = validate_note_type(note_type)
@@ -283,6 +344,7 @@ class BrainService:
         return self._load_proposal(proposal_id)
 
     def commit_save(self, proposal_id: str) -> SavedItem:
+        self._require_matching_schema()
         proposal = self._load_proposal(proposal_id)
         if proposal.status != "pending":
             raise ValidationError(f"Proposal {proposal_id} is not pending")
@@ -344,6 +406,8 @@ class BrainService:
             folders=CONTENT_FOLDERS,
         )
         result["unmigrated_folders"] = self.unmigrated_folders()
+        result["schema_version"] = SCHEMA_VERSION
+        result["schema_mismatch"] = self._schema_mismatch
         return result
 
     # -- internals -------------------------------------------------------------

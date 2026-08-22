@@ -44,6 +44,16 @@ DOMAIN_FOLDER = {
 def folder_for(domain: str, note_type: str) -> str:
     return f"{DOMAIN_FOLDER[domain]}/{FOLDER_FOR_TYPE[note_type]}"
 
+# The layout the code expects, stamped into the vault so the two can be compared.
+# Bump this whenever a change would leave existing notes in the wrong place:
+#   1 — flat Prompts/ Skills/ Knowledge/ Resources/ Projects/, routed by a single `kind`
+#   2 — <Domain>/<Type>/, closed sets, structure enforced at commit
+SCHEMA_VERSION = 2
+
+# Tracked on purpose: it has to travel with the notes, so it cannot live under the
+# gitignored .second-brain/ index that a clone never receives.
+VAULT_SCHEMA_FILE = ".brain-schema.json"
+
 MAPS_FOLDER = "Maps"
 SOURCES_FOLDER = "Sources"
 TAG_REGISTRY_PATH = f"{MAPS_FOLDER}/Tag Registry.md"
@@ -79,6 +89,15 @@ LEGACY_KIND_TO_TYPE = {
 
 class ValidationError(ValueError):
     """A structural rule was broken. Raised instead of writing a non-conforming note."""
+
+
+class SchemaMismatch(RuntimeError):
+    """The vault was written for a different layout than this code produces.
+
+    Raised on writes only. Retrieval stays available, because reading a vault whose
+    layout has moved is harmless, whereas writing into it puts notes where neither
+    version will look for them.
+    """
 
 
 def normalize_tag(value: str) -> str:
