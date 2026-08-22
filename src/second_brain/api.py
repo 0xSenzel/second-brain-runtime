@@ -1,6 +1,11 @@
 from __future__ import annotations
 
 import os
+import pathlib
+import re
+import shutil
+
+import os
 import urllib.parse
 from pathlib import Path
 from typing import Any
@@ -9,6 +14,41 @@ from .index import BrainIndex, OllamaEmbedder
 from .service import BrainService
 
 DEFAULT_VAULT = Path.home() / "Documents" / "second-brain"
+
+
+# Capture leaves scratch media outside the vault — the post's video plus the
+# frame directory, contact sheet and audio the analysis step writes beside it.
+# Once a proposal is decided that material has served its purpose: the note or
+# the rejection is the durable outcome. Opt-in, because a knowledge vault should
+# not delete files outside itself unless it was told where they are.
+_CAPTURE_CACHE_ENV = "SECOND_BRAIN_CAPTURE_CACHE"
+
+
+def _purge_capture_scratch(source_url: str) -> int:
+    """Delete scratch belonging to one captured post. Returns entries removed."""
+    cache_dir = os.environ.get(_CAPTURE_CACHE_ENV, "").strip()
+    if not cache_dir:
+        return 0
+    cache = pathlib.Path(cache_dir)
+    if not cache.is_dir():
+        return 0
+    # Every artefact is named for the post, so the trailing id in the canonical
+    # URL identifies the set. No id means nothing safe to match on.
+    match = re.search(r"(\d{6,})", source_url or "")
+    if not match:
+        return 0
+    post_id = match.group(1)
+    removed = 0
+    for entry in cache.glob(f"{post_id}*"):
+        try:
+            if entry.is_dir():
+                shutil.rmtree(entry)
+            else:
+                entry.unlink()
+            removed += 1
+        except OSError:
+            pass
+    return removed
 
 
 class BrainAPI:
@@ -92,6 +132,8 @@ class BrainAPI:
     def commit_save(self, proposal_id: str, *, approved: bool) -> dict[str, Any]:
         if approved is not True:
             raise PermissionError("Explicit user approval is required before saving approved knowledge")
+        # Read before committing: the proposal moves out of Pending on success.
+        proposal = self.service.get_proposal(proposal_id)
         saved = self.service.commit_save(proposal_id)
         index_result = self.index.reindex()
         return {
@@ -101,11 +143,16 @@ class BrainAPI:
             "source_path": saved.source_path,
             "obsidian_uri": self._uri(saved.note_path),
             "index": index_result,
+            "scratch_purged": _purge_capture_scratch(getattr(proposal, "source_url", "")),
         }
 
     def reject_save(self, proposal_id: str) -> dict[str, Any]:
         proposal = self.service.reject_save(proposal_id)
-        return {"proposal_id": proposal.id, "status": proposal.status}
+        return {
+            "proposal_id": proposal.id,
+            "status": proposal.status,
+            "scratch_purged": _purge_capture_scratch(getattr(proposal, "source_url", "")),
+        }
 
     def pending(self) -> list[dict[str, Any]]:
         return [

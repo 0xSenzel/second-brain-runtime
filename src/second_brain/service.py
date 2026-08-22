@@ -278,6 +278,10 @@ class BrainService:
             superseded.append(earlier.id)
         return superseded
 
+    def get_proposal(self, proposal_id: str) -> Proposal:
+        """Read a staged proposal without deciding it."""
+        return self._load_proposal(proposal_id)
+
     def commit_save(self, proposal_id: str) -> SavedItem:
         proposal = self._load_proposal(proposal_id)
         if proposal.status != "pending":

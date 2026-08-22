@@ -463,3 +463,80 @@ def test_prepare_input_still_derives_source_url_when_not_given(tmp_path: Path) -
 
     proposal = service.prepare_input(str(scratch), title="Local capture")
     assert proposal.source_url.startswith("file://")
+
+
+def _capture_cache(tmp_path: Path, post_id: str) -> Path:
+    """The scratch a capture leaves behind: media plus the video tool's by-products."""
+    cache = tmp_path / "cache" / "videos"
+    cache.mkdir(parents=True)
+    (cache / f"{post_id}.mp4").write_bytes(b"x" * 2048)
+    (cache / f"{post_id}_source.md").write_text("captured", encoding="utf-8")
+    (cache / f"{post_id}_contact.jpg").write_bytes(b"x" * 512)
+    frames = cache / f"{post_id}_frames"
+    frames.mkdir()
+    (frames / "frame_1.png").write_bytes(b"x" * 256)
+    (cache / "9999999999999999999.mp4").write_bytes(b"x" * 128)  # another capture
+    return cache
+
+
+def _prepare_capture(service: BrainService, post_id: str, scratch: Path):
+    return service.prepare_input(
+        str(scratch),
+        note_type="concept",
+        domain="tech",
+        title=f"Captured post {post_id}",
+        summary="A captured short-video post used for provenance testing.",
+        tags=["ai-learning", "mastery-learning"],
+        aliases=["captured post", "短视频笔记"],
+        maps=["AI Coding Tools"],
+        source_url=f"https://www.douyin.com/video/{post_id}",
+        source_kind="douyin-video",
+    )
+
+
+def test_commit_purges_the_capture_scratch(tmp_path: Path, monkeypatch) -> None:
+    post_id = "7654216649075068196"
+    cache = _capture_cache(tmp_path, post_id)
+    monkeypatch.setenv("SECOND_BRAIN_CAPTURE_CACHE", str(cache))
+
+    from second_brain.api import BrainAPI
+
+    api = BrainAPI(tmp_path / "vault")
+    proposal = _prepare_capture(api.service, post_id, cache / f"{post_id}_source.md")
+    result = api.commit_save(proposal.id, approved=True)
+
+    assert result["scratch_purged"] == 4
+    assert not list(cache.glob(f"{post_id}*"))
+    # A different capture's files must survive.
+    assert (cache / "9999999999999999999.mp4").exists()
+
+
+def test_reject_purges_the_capture_scratch(tmp_path: Path, monkeypatch) -> None:
+    post_id = "7634669478189567246"
+    cache = _capture_cache(tmp_path, post_id)
+    monkeypatch.setenv("SECOND_BRAIN_CAPTURE_CACHE", str(cache))
+
+    from second_brain.api import BrainAPI
+
+    api = BrainAPI(tmp_path / "vault")
+    proposal = _prepare_capture(api.service, post_id, cache / f"{post_id}_source.md")
+    result = api.reject_save(proposal.id)
+
+    assert result["scratch_purged"] == 4
+    assert not list(cache.glob(f"{post_id}*"))
+
+
+def test_purge_is_off_when_no_cache_is_configured(tmp_path: Path, monkeypatch) -> None:
+    """Without the env var the vault must never delete files outside itself."""
+    post_id = "7649289638800067891"
+    cache = _capture_cache(tmp_path, post_id)
+    monkeypatch.delenv("SECOND_BRAIN_CAPTURE_CACHE", raising=False)
+
+    from second_brain.api import BrainAPI
+
+    api = BrainAPI(tmp_path / "vault")
+    proposal = _prepare_capture(api.service, post_id, cache / f"{post_id}_source.md")
+    result = api.commit_save(proposal.id, approved=True)
+
+    assert result.get("scratch_purged", 0) == 0
+    assert (cache / f"{post_id}.mp4").exists()
