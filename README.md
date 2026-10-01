@@ -8,12 +8,25 @@ return cited context without loading the whole vault.
 
 1. Paste text, a webpage, YouTube link, PDF, Markdown file, prompt, or `SKILL.md` into Codex or Claude.
 2. Say **"Save this to my brain."**
-3. The agent stages a proposal and shows its title, summary, destination, type, domain, tags, aliases, maps, and suggested connections.
+3. The agent stages a proposal and shows its title, full summary and body, destination, type, domain, tags, aliases, maps, and suggested connections.
 4. Approve or reject it. Only approval creates an approved distilled note and an unchanged raw-source note.
 5. Later ask questions such as **"What prompts have I saved for UI reviews?"** The agent retrieves a small, cited bundle from the local index and knowledge graph.
 6. Open the Obsidian vault when you want to browse maps, backlinks, properties, or the graph visually.
 
 Normal questions are read-only. Pending and rejected proposals are excluded from answers.
+
+## Save a reusable note
+
+Pass concise prose in `summary` for search and map listings. Pass the complete reusable
+Markdown in `body`: methods, examples, limits, evidence pointers, or exact prompts.
+Keep the raw transcript, captions, and visual extraction in `content_or_url`; these
+remain in the linked source note. Review the full summary and body before approving.
+
+Use `brain prepare INPUT --body-file NOTE.md` to supply the body from a file.
+When revising a note, omit `body` to preserve its existing Details section, or supply
+its complete replacement. An empty string proposes removing that section.
+Older pending proposals load with an empty body. This additive field uses the existing
+proposal deserialization defaults and Markdown storage; it requires no vault migration.
 
 ## Where a note goes
 

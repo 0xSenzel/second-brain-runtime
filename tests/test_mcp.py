@@ -31,13 +31,16 @@ def test_stdio_mcp_exposes_review_first_workflow(tmp_path: Path) -> None:
                     "brain_prepare_save",
                     {
                         "content_or_url": "A prompt for testing interfaces.",
-                        "kind": "prompt",
+                        "note_type": "prompt",
+                        "body": "## Prompt\n\nReview the interface.",
                         "title": "Interface Test",
                         "summary": "Checks interface behavior.",
                     },
                 )
                 payload = json.loads(prepared.content[0].text)
                 assert payload["approval_required"] is True
+                assert payload["body"] == "## Prompt\n\nReview the interface."
+                assert payload["note_type"] == "prompt"
                 assert not (tmp_path / "vault" / "Prompts" / "Interface Test.md").exists()
 
     anyio.run(scenario)

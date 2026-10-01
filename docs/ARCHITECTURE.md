@@ -22,6 +22,10 @@ flowchart LR
 - Markdown is authoritative and remains readable without this runtime.
 - `.second-brain/index.sqlite3` contains regenerable lexical, vector, and graph indexes.
 - Raw material is retained under `Sources/` and explicitly marked as untrusted data.
+- A proposal stores a concise `summary` and a separate reviewed Markdown `body`. The
+  body appears in the approved note under Details and in the full review preview.
+  Older proposals default to an empty body through `Proposal.from_dict`; the vault
+  layout and index schema remain compatible.
 - Approved notes live at `<Domain>/<Type>/`, where domain is `Personal` or `Tech` and type
   is one of `Notes`, `Prompts`, `Skills`, `Projects`, or `Essays`. `Maps/` holds the index
   notes; `Reviews/` holds proposals.
@@ -66,7 +70,7 @@ Two consequences are deliberate:
 
 Because the gate asks agents to fix and re-prepare, and re-preparing mints a new proposal
 id, `prepare_save` retires any pending proposal holding identical content from the same
-source. Otherwise every blocked save would strand its earlier attempt in the queue forever.
+source and destination. Separate task notes from one source retain distinct proposals. Otherwise every blocked save would strand its earlier attempt in the queue forever.
 
 Notes edited by hand bypass all of this, so `validation.lint_vault` applies the same rules
 to the whole vault and reports what fails, reachable as `brain_validate` or `brain validate`.

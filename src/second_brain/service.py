@@ -268,6 +268,7 @@ class BrainService:
         domain: str | None = None,
         title: str | None = None,
         summary: str = "",
+        body: str | None = None,
         tags: Iterable[str] | None = None,
         aliases: Iterable[str] | None = None,
         maps: Iterable[str] | None = None,
@@ -289,6 +290,7 @@ class BrainService:
             content=source.content,
             title=title or source.title,
             summary=summary,
+            body=body,
             tags=tags,
             aliases=aliases,
             maps=maps,
@@ -307,6 +309,7 @@ class BrainService:
         domain: str = "tech",
         title: str,
         summary: str = "",
+        body: str | None = None,
         tags: Iterable[str] | None = None,
         aliases: Iterable[str] | None = None,
         maps: Iterable[str] | None = None,
@@ -328,12 +331,18 @@ class BrainService:
         target_path, is_revision = self._target_for(
             note_type, domain, title, source_url, destination
         )
+        if body is None and is_revision:
+            _, existing = read_note(self._inside_vault(target_path))
+            # Take the renderer's outer sections; nested prompt headings stay intact.
+            details = existing.partition("\n## Details\n")[2]
+            body = details.rpartition("\n## Connections\n")[0].strip() if details else ""
         proposal = Proposal(
             id=proposal_id,
             note_type=note_type,
             domain=domain,
             title=title,
             summary=summary.strip(),
+            body=(body or "").strip(),
             content=content.rstrip(),
             tags=sorted({normalize_tag(tag) for tag in (tags or []) if normalize_tag(tag)}),
             aliases=[str(alias).strip() for alias in (aliases or []) if str(alias).strip()],
@@ -360,8 +369,8 @@ class BrainService:
 
         A blocked commit tells the agent to fix the metadata and prepare again, which
         mints a fresh id and strands the previous attempt in the review queue forever.
-        Identical content means this is that retry, not a second piece of material, so
-        the earlier attempt is rejected rather than left to accumulate.
+        Identical content and destination identify a retry. Distinct task notes
+        from one source retain their own proposals.
         """
         superseded: list[str] = []
         content_hash = _content_hash(proposal.content)
@@ -370,7 +379,7 @@ class BrainService:
                 continue
             if _content_hash(earlier.content) != content_hash:
                 continue
-            if earlier.source_url != proposal.source_url:
+            if earlier.source_url != proposal.source_url or earlier.target_path != proposal.target_path:
                 continue
             self._finish_review(earlier, "Rejected")
             superseded.append(earlier.id)
@@ -464,13 +473,15 @@ class BrainService:
     def _target_for(
         self, note_type: str, domain: str, title: str, source_url: str, destination: str
     ) -> tuple[str, bool]:
-        if source_url:
-            existing = self._find_by_source_url(source_url)
-            if existing:
-                return existing, True
         if destination:
-            return validate_destination(destination, note_type, domain), False
-        return f"{folder_for(domain, note_type)}/{title}.md", False
+            target = validate_destination(destination, note_type, domain)
+        else:
+            if source_url:
+                existing = self._find_by_source_url(source_url)
+                if existing:
+                    return existing, True
+            target = f"{folder_for(domain, note_type)}/{title}.md"
+        return target, self._inside_vault(target).is_file()
 
     def _find_by_source_url(self, source_url: str) -> str | None:
         for folder in CONTENT_FOLDERS:

@@ -63,8 +63,8 @@ def check_proposal(proposal: Proposal, *, registered_tags: set[str]) -> None:
         # sections inside it and leaking Markdown into the map entry.
         problems.append(
             "summary contains Markdown headings, so it is a document rather than a "
-            "summary. Pass the summary text only; the full material belongs in "
-            "content_or_url, which is preserved in the source note"
+            "summary. Pass the summary text only; use body for the reusable note "
+            "and content_or_url for the raw source"
         )
     elif len(proposal.summary) > MAX_SUMMARY:
         problems.append(

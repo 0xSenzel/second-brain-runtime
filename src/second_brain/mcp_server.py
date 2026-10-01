@@ -27,7 +27,7 @@ mcp = FastMCP(
         "a normal question change a Markdown file.\n"
         "\n"
         "Show the proposal in full before asking for approval, and reproduce the "
-        "summary VERBATIM. The summary is the note being accepted; describing it "
+        "summary and body VERBATIM. These are the note being accepted; describing it "
         "in a sentence — 'it captures the framing, the workflow and some caveats' "
         "— gives the user nothing to review, so their approval means nothing. "
         "Alongside it show title, destination, note_type, domain, tags, aliases, "
@@ -55,8 +55,8 @@ mcp = FastMCP(
         "Every saved note needs, or the commit is refused:\n"
         "  - a summary: prose only, no Markdown headings, under 1500 characters. It is "
         "what the index ranks on and what the map entry quotes. Do not pass the whole "
-        "note body here — the full material goes in content_or_url and is kept in the "
-        "source note;\n"
+        "note body here — pass reusable methods, examples, and complete prompts in body. "
+        "Put the raw transcript and extraction evidence in content_or_url;\n"
         "  - at least 2 tags, all present in Maps/Tag Registry.md;\n"
         "  - at least 2 aliases, covering other phrasings someone would search for, "
         "including the original language when the source is not English;\n"
@@ -99,6 +99,7 @@ def brain_prepare_save(
     domain: str = "tech",
     title: str = "",
     summary: str = "",
+    body: str | None = None,
     tags_json: str = "[]",
     aliases_json: str = "[]",
     maps_json: str = "[]",
@@ -120,6 +121,11 @@ def brain_prepare_save(
     as source_url and what it is as source_kind (e.g. douyin-video, tiktok-video).
     Otherwise provenance is derived from content_or_url and records a file:// path
     that is local to this container and deleted hours later.
+    summary is concise prose for search. body is the complete reviewed Markdown
+    saved in the canonical note, including methods, examples, limits, and exact prompts.
+    content_or_url preserves the raw source separately. Show summary and body verbatim
+    before approval. Omit body on a revision to preserve it; pass an empty string to
+    propose removing it. Older pending proposals without body still load.
     Check blocking_problems in the response before showing the proposal to the user.
     """
     result = _api().prepare_save(
@@ -128,6 +134,7 @@ def brain_prepare_save(
         domain=domain or None,
         title=title or None,
         summary=summary,
+        body=body,
         tags=json.loads(tags_json),
         aliases=json.loads(aliases_json),
         maps=json.loads(maps_json),

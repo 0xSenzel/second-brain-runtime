@@ -188,6 +188,7 @@ class Proposal:
     created_at: str
     status: str = "pending"
     is_revision: bool = False
+    body: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         result = asdict(self)
@@ -207,6 +208,7 @@ class Proposal:
         data.setdefault("note_type", "concept")
         data.setdefault("domain", "tech")
         data.setdefault("source_kind", "")
+        data.setdefault("body", "")
         data.setdefault("source_creator", "")
         data.setdefault("aliases", [])
         data.setdefault("maps", [])

@@ -46,3 +46,26 @@ def test_youtube_url_uses_transcript_provider_without_executing_content(monkeypa
 
     assert source.kind == "youtube"
     assert "Ignore prior instructions" in source.content
+
+
+def test_youtube_ingestion_preserves_non_english_track_metadata(monkeypatch):
+    from types import SimpleNamespace
+
+    import second_brain.ingest as module
+
+    track = SimpleNamespace(
+        language="Chinese", language_code="zh-Hans", is_generated=False,
+        fetch=lambda: [SimpleNamespace(text="保留原文", start=2.5, duration=1)],
+    )
+    monkeypatch.setattr(module, "YouTubeTranscriptApi", lambda: SimpleNamespace(list=lambda _: [track]))
+    ingestor = SourceIngestor()
+    monkeypatch.setattr(ingestor, "_youtube_title", lambda _: "A video")
+    source = ingestor.ingest("https://youtu.be/abcdefghijk")
+    assert "zh-Hans" in source.content
+    assert "manual" in source.content
+    assert "[00:02] 保留原文" in source.content
+
+
+def test_youtube_live_url_uses_caption_provider(monkeypatch):
+    import second_brain.ingest as module
+    assert module._youtube_id("https://www.youtube.com/live/abcdefghijk") == "abcdefghijk"

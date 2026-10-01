@@ -68,8 +68,13 @@ class SourceIngestor:
         video_id = _youtube_id(url)
         if not video_id:
             raise ValueError("Could not determine the YouTube video ID")
-        transcript = YouTubeTranscriptApi().fetch(video_id)
-        lines = []
+        tracks = list(YouTubeTranscriptApi().list(video_id))
+        if not tracks:
+            raise ValueError("No caption tracks are available for this YouTube video")
+        selected = min(tracks, key=lambda track: track.is_generated)
+        transcript = selected.fetch()
+        caption_type = "generated" if selected.is_generated else "manual"
+        lines = [f"Caption language: {selected.language} ({selected.language_code}); track: {caption_type}."]
         for snippet in transcript:
             text = getattr(snippet, "text", None)
             start = getattr(snippet, "start", None)
@@ -80,7 +85,7 @@ class SourceIngestor:
                 continue
             timestamp = _timestamp(float(start or 0))
             lines.append(f"[{timestamp}] {text}")
-        if not lines:
+        if len(lines) == 1:
             raise ValueError("No transcript was available for this YouTube video")
         title = self._youtube_title(url) or f"YouTube {video_id}"
         return IngestedSource(kind="youtube", title=title, content="\n".join(lines), source_url=url)
@@ -122,7 +127,7 @@ def _youtube_id(url: str) -> str:
     parsed = urllib.parse.urlparse(url)
     if (parsed.hostname or "").lower() == "youtu.be":
         return parsed.path.strip("/").split("/")[0]
-    if parsed.path.startswith("/shorts/") or parsed.path.startswith("/embed/"):
+    if any(parsed.path.startswith(f"/{kind}/") for kind in ("shorts", "embed", "live")):
         parts = parsed.path.strip("/").split("/")
         return parts[1] if len(parts) > 1 else ""
     return urllib.parse.parse_qs(parsed.query).get("v", [""])[0]

@@ -70,6 +70,7 @@ class BrainAPI:
         domain: str | None = None,
         title: str | None = None,
         summary: str = "",
+        body: str | None = None,
         tags: list[str] | None = None,
         aliases: list[str] | None = None,
         maps: list[str] | None = None,
@@ -85,6 +86,7 @@ class BrainAPI:
             domain=domain,
             title=title,
             summary=summary,
+            body=body,
             tags=tags,
             aliases=aliases,
             maps=maps,
@@ -106,10 +108,13 @@ class BrainAPI:
             "destination": proposal.target_path,
             "source_destination": proposal.source_path,
             "summary": proposal.summary,
+            "body": proposal.body,
             "tags": proposal.tags,
             "aliases": proposal.aliases,
             "maps": proposal.maps,
             "source_kind": proposal.source_kind,
+            "source_url": proposal.source_url,
+            "source_creator": proposal.source_creator,
             "connections": [
                 {"relation": item.relation, "target": item.target, "reason": item.reason}
                 for item in proposal.connections

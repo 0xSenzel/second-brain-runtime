@@ -59,6 +59,10 @@ def render_review(proposal: Proposal) -> str:
 
 {proposal.summary or "No summary supplied yet."}
 
+## Proposed body
+
+{proposal.body or "No separate body supplied."}
+
 ## Proposed metadata
 
 - Domain: `{proposal.domain}`
@@ -132,6 +136,7 @@ def render_knowledge(proposal: Proposal, note_id: str) -> str:
     if proposal.source_creator:
         source_lines.append(f"- Creator: {proposal.source_creator}")
 
+    details = f"\n## Details\n\n{proposal.body}\n" if proposal.body else ""
     maps_lines = "\n".join(f"- [[{name}]]" for name in proposal.maps) or "- None yet"
 
     body = f"""# {proposal.title}
@@ -139,7 +144,7 @@ def render_knowledge(proposal: Proposal, note_id: str) -> str:
 ## Summary
 
 {proposal.summary or proposal.content[:800]}
-
+{details}
 ## Connections
 
 {render_connections(proposal.connections)}

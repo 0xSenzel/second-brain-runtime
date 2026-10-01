@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from pathlib import Path
 
 from .api import BrainAPI
 from .migration import MigrationPlanner
@@ -23,6 +24,7 @@ def parser() -> argparse.ArgumentParser:
                          help="Which part of life this belongs to")
     prepare.add_argument("--title")
     prepare.add_argument("--summary", default="")
+    prepare.add_argument("--body-file", type=Path, help="Markdown body to review and save in the note")
     prepare.add_argument("--tag", action="append", default=[])
     prepare.add_argument("--alias", action="append", default=[])
     prepare.add_argument("--map", action="append", default=[], dest="maps")
@@ -70,6 +72,7 @@ def main(argv: list[str] | None = None) -> None:
                 domain=args.domain,
                 title=args.title,
                 summary=args.summary,
+                body=args.body_file.read_text(encoding="utf-8") if args.body_file else None,
                 tags=args.tag,
                 aliases=args.alias,
                 maps=args.maps,
