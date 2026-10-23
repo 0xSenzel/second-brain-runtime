@@ -25,7 +25,30 @@ def test_stdio_mcp_exposes_review_first_workflow(tmp_path: Path) -> None:
                 await session.initialize()
                 tools = await session.list_tools()
                 names = {tool.name for tool in tools.tools}
-                assert {"brain_prepare_save", "brain_commit_save", "brain_ask", "brain_open"} <= names
+                assert {
+                    "brain_prepare_save", "brain_commit_save", "brain_ask", "brain_open", "brain_list_tags"
+                } <= names
+
+                registry_path = tmp_path / "vault" / "Maps" / "Tag Registry.md"
+                empty_tags = await session.call_tool("brain_list_tags", {})
+                assert json.loads(empty_tags.content[0].text)["tags"] == []
+                await session.call_tool(
+                    "brain_register_tags",
+                    {
+                        "tags_json": '["hypertrophy", "training-intensity"]',
+                        "meanings_json": json.dumps({
+                            "hypertrophy": "Muscle growth.",
+                            "training-intensity": "Training effort.",
+                        }),
+                    },
+                )
+                before = registry_path.read_text(encoding="utf-8")
+                listed = json.loads((await session.call_tool("brain_list_tags", {})).content[0].text)
+                assert listed["tags"] == [
+                    {"name": "hypertrophy", "meaning": "Muscle growth."},
+                    {"name": "training-intensity", "meaning": "Training effort."},
+                ]
+                assert registry_path.read_text(encoding="utf-8") == before
 
                 prepared = await session.call_tool(
                     "brain_prepare_save",

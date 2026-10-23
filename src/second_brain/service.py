@@ -206,13 +206,17 @@ class BrainService:
     # -- tag registry ----------------------------------------------------------
 
     def registered_tags(self) -> set[str]:
+        return set(self.tag_catalog())
+
+    def tag_catalog(self) -> dict[str, str]:
+        """Return registered tags and their meanings without changing the vault."""
         path = self.vault / TAG_REGISTRY_PATH
         if not path.exists():
-            return set()
+            return {}
         _, body = read_note(path)
         return {
-            normalize_tag(match.group(1))
-            for match in re.finditer(r"(?m)^\s*-\s*`([^`]+)`", body)
+            normalize_tag(match.group(1)): (match.group(2) or "").strip()
+            for match in re.finditer(r"(?m)^\s*-\s*`([^`]+)`(?:\s*—\s*(.*))?$", body)
         }
 
     def register_tags(self, tags: Iterable[str], *, meanings: dict[str, str] | None = None) -> list[str]:

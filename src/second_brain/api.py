@@ -8,8 +8,9 @@ import urllib.parse
 from pathlib import Path
 from typing import Any
 
+from .deletion import DeleteWorkflow
 from .index import BrainIndex, OllamaEmbedder
-from .models import SCHEMA_VERSION
+from .models import SCHEMA_VERSION, TAG_REGISTRY_PATH
 from .service import BrainService
 
 DEFAULT_VAULT = Path.home() / "Documents" / "second-brain"
@@ -130,6 +131,13 @@ class BrainAPI:
         added = self.service.register_tags(tags, meanings=meanings)
         return {"added": added, "registered_tags": sorted(self.service.registered_tags())}
 
+    def list_tags(self) -> dict[str, Any]:
+        catalog = self.service.tag_catalog()
+        return {
+            "registry_path": TAG_REGISTRY_PATH,
+            "tags": [{"name": name, "meaning": catalog[name]} for name in sorted(catalog)],
+        }
+
     def validate(self) -> dict[str, Any]:
         return self.service.validate()
 
@@ -149,6 +157,18 @@ class BrainAPI:
             "index": index_result,
             "scratch_purged": _purge_capture_scratch(getattr(proposal, "source_url", "")),
         }
+
+    def prepare_delete(self, note_id: str, *, reason: str = "") -> dict[str, Any]:
+        """Stage a recoverable deletion review without changing canonical files."""
+        return DeleteWorkflow(self.vault).prepare(note_id, reason=reason)
+
+    def commit_delete(self, proposal_id: str, *, approved: bool) -> dict[str, Any]:
+        """Archive a staged note only after explicit approval of its proposal ID."""
+        if approved is not True:
+            raise PermissionError("Explicit user approval is required before deleting approved knowledge")
+        result = DeleteWorkflow(self.vault).commit(proposal_id)
+        result["index"] = self.index.reindex()
+        return result
 
     def reject_save(self, proposal_id: str) -> dict[str, Any]:
         proposal = self.service.reject_save(proposal_id)

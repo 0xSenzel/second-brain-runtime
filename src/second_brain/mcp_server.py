@@ -26,6 +26,13 @@ mcp = FastMCP(
         "conversation. Never write vault files by any other means, and never let "
         "a normal question change a Markdown file.\n"
         "\n"
+        "Deletion is also a two-step workflow. brain_prepare_delete stages a review "
+        "and changes no canonical files. Show the exact archive and map changes, then "
+        "call brain_commit_delete only after the user explicitly approves that exact "
+        "proposal ID in the current conversation. Approval to build or test this tool "
+        "does not approve deletion of any note. Deleted notes and linked sources are "
+        "archived with a recovery receipt; never permanently delete them.\n"
+        "\n"
         "Show the proposal in full before asking for approval, and reproduce the "
         "summary and body VERBATIM. These are the note being accepted; describing it "
         "in a sentence — 'it captures the framing, the workflow and some caveats' "
@@ -64,9 +71,10 @@ mcp = FastMCP(
         "brain_prepare_save reports these as blocking_problems before approval — fix "
         "them and re-prepare rather than asking the user to approve a proposal that "
         "will refuse to commit; re-preparing the same capture automatically retires "
-        "the earlier attempt, so the review queue stays clean. To use a new tag, call "
-        "brain_register_tags with a short meaning for each, and tell the user you are "
-        "extending the vocabulary.\n"
+        "the earlier attempt, so the review queue stays clean. Call brain_list_tags "
+        "before choosing tags. Prefer an existing precise tag. If fewer than two fit, "
+        "propose missing tag names and meanings, then wait for user approval before "
+        "calling brain_register_tags. Tag approval does not approve the note.\n"
         "\n"
         "Before proposing a save, call brain_find on the topic. If a near-duplicate "
         "exists, propose extending that note and say which one. Name a note after the "
@@ -154,6 +162,22 @@ def brain_commit_save(proposal_id: str, user_approved: bool = False) -> str:
 
 
 @mcp.tool()
+def brain_prepare_delete(note_id: str, reason: str = "") -> str:
+    """Stage a recoverable deletion review for one approved canonical note ID.
+
+    This does not change canonical files. Review the note/source archive paths and
+    exact map edits with the user before requesting approval for this proposal ID.
+    """
+    return json.dumps(_api().prepare_delete(note_id, reason=reason), ensure_ascii=False)
+
+
+@mcp.tool()
+def brain_commit_delete(proposal_id: str, user_approved: bool = False) -> str:
+    """Archive one exact staged deletion proposal after explicit user approval."""
+    return json.dumps(_api().commit_delete(proposal_id, approved=user_approved), ensure_ascii=False)
+
+
+@mcp.tool()
 def brain_reject_save(proposal_id: str) -> str:
     """Reject a pending proposal without writing canonical knowledge."""
     return json.dumps(_api().reject_save(proposal_id), ensure_ascii=False)
@@ -163,6 +187,12 @@ def brain_reject_save(proposal_id: str) -> str:
 def brain_pending() -> str:
     """List captures waiting for review."""
     return json.dumps(_api().pending(), ensure_ascii=False)
+
+
+@mcp.tool()
+def brain_list_tags() -> str:
+    """List registered tags and their meanings without changing the vault."""
+    return json.dumps(_api().list_tags(), ensure_ascii=False)
 
 
 @mcp.tool()
