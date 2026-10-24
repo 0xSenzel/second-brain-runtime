@@ -60,7 +60,9 @@ class BrainAPI:
             url=os.environ.get("OLLAMA_URL", "http://localhost:11434"),
             model=os.environ.get("SECOND_BRAIN_EMBED_MODEL", "bge-m3"),
         )
-        self.embedder = embedder if use_embeddings and embedder.available() else None
+        # Defer connectivity checks until embeddings are actually requested. Exact and
+        # lexical retrieval should not wait on the optional local model service.
+        self.embedder = embedder if use_embeddings else None
         self.index = BrainIndex(self.vault, embedder=self.embedder)
 
     def prepare_save(
@@ -191,20 +193,36 @@ class BrainAPI:
             for proposal in self.service.list_pending()
         ]
 
-    def ask(self, query: str, *, max_tokens: int = 2500, hops: int = 1) -> dict[str, Any]:
-        self.index.reindex()
+    def ask(self, query: str, *, max_tokens: int = 4000, hops: int = 0) -> dict[str, Any]:
+        index_result = self.index.reindex(embed_vectors=False)
         bundle = self.index.context(query, max_tokens=max_tokens, hops=hops)
+        bundle["warnings"].extend(
+            f"Indexing warning: {warning}" for warning in index_result.get("warnings", [])
+        )
         for source in bundle["sources"]:
             source["obsidian_uri"] = self._uri(source["path"])
         bundle["instruction"] = "Answer from the evidence only and cite the supplied Obsidian notes."
         return bundle
 
-    def find(self, query: str, *, limit: int = 6, hops: int = 0) -> dict[str, Any]:
-        self.index.reindex()
-        results = [hit.as_dict() for hit in self.index.search(query, limit=limit, hops=hops)]
+    def find(self, query: str, *, limit: int = 5, hops: int = 0) -> dict[str, Any]:
+        index_result = self.index.reindex(embed_vectors=False)
+        limit = min(max(int(limit), 1), 5)
+        results = [
+            hit.as_dict()
+            for hit in self.index.search(
+                query, limit=limit, hops=hops, semantic_fallback=False
+            )
+        ]
         for result in results:
             result["obsidian_uri"] = self._uri(result["path"])
-        return {"query": query, "results": results}
+        return {
+            "query": query,
+            "results": results,
+            "warnings": [f"Indexing warning: {warning}" for warning in index_result.get("warnings", [])],
+        }
+
+    def read(self, note_id: str, *, section: str = "", max_chars: int = 12000) -> dict[str, Any]:
+        return self.index.read_note(note_id, section=section, max_chars=max_chars)
 
     def neighbors(self, note_id: str) -> dict[str, Any]:
         return {"note_id": note_id, "neighbors": self.index.neighbors(note_id)}
@@ -216,11 +234,16 @@ class BrainAPI:
         return self.index.reindex()
 
     def doctor(self) -> dict[str, Any]:
+        embeddings_available = bool(self.embedder and self.embedder.available())
         return {
             "vault": str(self.vault),
             "vault_exists": self.vault.is_dir(),
             "pending_proposals": len(self.service.list_pending()),
-            "embeddings": "available" if self.embedder else "unavailable; lexical and graph fallback active",
+            "embeddings": (
+                "available"
+                if embeddings_available
+                else "unavailable; lexical and graph fallback active"
+            ),
             "embedding_model": getattr(self.embedder, "model", None),
             "database": str(self.index.db_path),
             "registered_tags": len(self.service.registered_tags()),

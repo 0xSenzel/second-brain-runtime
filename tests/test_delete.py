@@ -29,6 +29,7 @@ def _approved_note(
         domain="tech",
         title=title,
         summary="A note used to test recoverable deletion.",
+        body="## Details\n\nDistinctive body for delete testing",
         tags=["delete-test", "recovery"],
         aliases=["Delete target", "Recovery target"],
         maps=list(maps),

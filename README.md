@@ -1,8 +1,8 @@
 # Local Second Brain
 
 A review-first knowledge layer for an Obsidian vault. Codex and Claude can capture
-material, search approved notes with local embeddings, follow typed graph connections, and
-return cited context without loading the whole vault.
+material, find and read approved notes, optionally use local embeddings when lexical search
+is sparse, and return bounded cited context without loading the whole vault.
 
 ## Everyday flow
 
@@ -10,10 +10,11 @@ return cited context without loading the whole vault.
 2. Say **"Save this to my brain."**
 3. The agent stages a proposal and shows its title, full summary and body, destination, type, domain, tags, aliases, maps, and suggested connections.
 4. Approve or reject it. Only approval creates an approved distilled note and an unchanged raw-source note.
-5. Later ask questions such as **"What prompts have I saved for UI reviews?"** The agent retrieves a small, cited bundle from the local index and knowledge graph.
+5. Use `brain_find` for matching items, then `brain_read` for an exact note body; use `brain_ask` for a broad question and its bounded evidence pack.
 6. Open the Obsidian vault when you want to browse maps, backlinks, properties, or the graph visually.
 
-Normal questions are read-only. Pending and rejected proposals are excluded from answers.
+Normal questions are read-only. Pending/rejected proposals, Maps, and raw Sources are excluded
+from normal retrieval; source URLs remain available as provenance on the approved note.
 
 ## Save a reusable note
 
@@ -111,8 +112,9 @@ The MCP server exposes:
 - `brain_reject_save` and `brain_pending` — manage the review queue
 - `brain_register_tags` — extend the controlled vocabulary
 - `brain_validate` — check every note against the structural rules, including the schema stamp
-- `brain_ask` — compact cited retrieval for answering
-- `brain_find` — matching saved items
+- `brain_find` — compact matching items with stable IDs, short snippets, and provenance
+- `brain_read` — exact approved note body or one bounded section by stable ID
+- `brain_ask` — up to four cited evidence notes in a 4,000-token context budget
 - `brain_neighbors` — typed graph links and backlinks
 - `brain_open` — an Obsidian link for a result
 
@@ -149,11 +151,14 @@ indexes. Every approved capture stores both the original material and a distille
 Typed Markdown links make useful relationships explicit, while bounded retrieval avoids
 sending an entire private vault to an AI provider.
 
-Ranking combines lexical and semantic arms by reciprocal rank fusion, taking each
-document's best rank within an arm rather than summing every matching chunk — summing
-scored documents by length, which let a raw source outrank the note distilled from it. Maps
-are demoted slightly and excluded from graph hops, since a map lists every note it indexes
-and would otherwise both crowd the results and make everything on it look related.
+Lexical search is the normal path. `brain_find` stays lexical; `brain_ask` tries local
+semantic search only when lexical search returns no results, and falls back cleanly if
+Ollama fails. Foreground retrieval updates the lexical index without embedding work.
+Reindexing checks canonical note paths and file metadata on each request, but reads and
+rebuilds only changed notes; Markdown remains the source of truth. `brain_find` does not
+expand graph links by default. `brain_ask` returns at most four notes and 4,000 tokens, and
+graph expansion is opt-in. Raw sources and Maps are not in normal retrieval, so a raw
+capture or a map listing cannot crowd out approved notes.
 
 The implementation was informed by existing Obsidian/RAG projects, but is purpose-built
 around the stricter proposal-before-write boundary and shared Codex/Claude MCP interface.

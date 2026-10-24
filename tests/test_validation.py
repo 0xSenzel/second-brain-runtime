@@ -19,6 +19,7 @@ def _commit(service: BrainService, title: str, **overrides):
         maps=["Test Map"],
     )
     payload.update(overrides)
+    payload.setdefault("body", f"## Details\n\n{payload['content']}")
     return service.commit_save(service.prepare_save(**payload).id)
 
 
@@ -128,8 +129,8 @@ def test_graph_hops_do_not_travel_through_a_map(tmp_path: Path) -> None:
 # --- ranking must not reward length ---------------------------------------------------
 
 
-def test_a_long_source_does_not_outrank_its_own_short_note(tmp_path: Path) -> None:
-    """Scores once summed over every matching chunk, so the longest file always won."""
+def test_normal_retrieval_uses_the_approved_note_body_not_its_raw_source(tmp_path: Path) -> None:
+    """Raw captured content stays in Sources and is excluded from normal retrieval."""
     vault = tmp_path / "vault"
     service = BrainService(vault)
     long_body = "\n\n".join(
@@ -147,9 +148,8 @@ def test_a_long_source_does_not_outrank_its_own_short_note(tmp_path: Path) -> No
 
     hits = index.search("soreness microtears hypertrophy", limit=5, hops=1)
 
-    assert hits[0].note_type != "source", (
-        f"a raw source outranked its distilled note: {[(h.note_type, h.path) for h in hits]}"
-    )
+    assert hits
+    assert all(hit.note_type != "source" for hit in hits)
     assert hits[0].path == "Tech/Notes/Why microtears do not drive growth.md"
 
 

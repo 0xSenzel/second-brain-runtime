@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
+from functools import lru_cache
+from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
-from .api import BrainAPI
+from .api import DEFAULT_VAULT, BrainAPI
 
 # These instructions travel with the tools to every client, which is the point:
 # the vault's AGENTS.md is only loaded when a session's cwd is inside the vault,
@@ -19,6 +22,14 @@ mcp = FastMCP(
         "scanning folders broadly. Answer only from retrieved evidence, cite the "
         "note paths and original URLs, and say plainly when the vault does not "
         "contain enough evidence.\n"
+        "Use lexical brain_find for matching-items requests and exact titles. It "
+        "stays on the fast path without calling the embedding service. For a known "
+        "note, use brain_read with its stable ID to retrieve the exact approved body. "
+        "Use brain_ask for broad questions; it returns a bounded evidence pack and "
+        "tries local embeddings only when lexical search returns no results. "
+        "Normal retrieval excludes raw sources, maps, pending proposals, and rejected "
+        "proposals. Graph expansion is opt-in and should be used only when relationships "
+        "help answer the question.\n"
         "\n"
         "Saving is a two-step workflow and must not be short-circuited. "
         "brain_prepare_save only stages a proposal. Call brain_commit_save only "
@@ -96,8 +107,18 @@ mcp = FastMCP(
 )
 
 
+@lru_cache(maxsize=4)
+def _api_for(vault: str, ollama_url: str, embedding_model: str) -> BrainAPI:
+    # Key all constructor configuration so MCP calls reuse the index/service while
+    # environment changes still select a fresh API instance.
+    return BrainAPI(vault)
+
+
 def _api() -> BrainAPI:
-    return BrainAPI()
+    vault = Path(os.environ.get("SECOND_BRAIN_VAULT") or DEFAULT_VAULT).expanduser().resolve()
+    ollama_url = os.environ.get("OLLAMA_URL", "http://localhost:11434")
+    embedding_model = os.environ.get("SECOND_BRAIN_EMBED_MODEL", "bge-m3")
+    return _api_for(str(vault), ollama_url, embedding_model)
 
 
 @mcp.tool()
@@ -220,15 +241,25 @@ def brain_validate() -> str:
 
 
 @mcp.tool()
-def brain_ask(query: str, max_tokens: int = 2500, hops: int = 1) -> str:
-    """Return compact, cited evidence from approved knowledge for answering a question."""
+def brain_ask(query: str, max_tokens: int = 4000, hops: int = 0) -> str:
+    """Return a bounded, cited evidence pack from approved note bodies."""
     return json.dumps(_api().ask(query, max_tokens=max_tokens, hops=hops), ensure_ascii=False)
 
 
 @mcp.tool()
-def brain_find(query: str, limit: int = 6) -> str:
-    """Find matching approved prompts, skills, sources, concepts, and projects."""
+def brain_find(query: str, limit: int = 5) -> str:
+    """Find matching approved notes with stable IDs, short excerpts, and provenance."""
     return json.dumps(_api().find(query, limit=limit), ensure_ascii=False)
+
+
+@mcp.tool()
+def brain_read(note_id: str, section: str = "", max_chars: int = 12000) -> str:
+    """Read the exact approved canonical note body by stable frontmatter ID.
+
+    Optionally select a Markdown heading by its text. The body is bounded; the response
+    marks truncation and reports omitted characters instead of summarizing the note.
+    """
+    return json.dumps(_api().read(note_id, section=section, max_chars=max_chars), ensure_ascii=False)
 
 
 @mcp.tool()

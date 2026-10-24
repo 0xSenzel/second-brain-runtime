@@ -29,11 +29,16 @@ def test_review_and_canonical_note_contain_the_full_body(tmp_path):
     with pytest.raises(PermissionError):
         api.commit_save(result["proposal_id"], approved=False)
     saved = api.commit_save(result["proposal_id"], approved=True)
-    _, body = read_note(api.vault / saved["note_path"])
+    metadata, body = read_note(api.vault / saved["note_path"])
     assert result["body"] in body
     assert "Raw transcript:" not in body
     assert "Raw transcript:" in (api.vault / saved["source_path"]).read_text()
     assert api.find("保留完整原文")["results"]
+    assert not api.find("spoken words and slide text")["results"]
+    read_result = api.read(metadata["id"])
+    assert read_result["body"].startswith("# Review a design")
+    assert "保留完整原文。" in read_result["body"]
+    assert not read_result["truncated"]
     assert api.validate()["findings"] == []
 
 

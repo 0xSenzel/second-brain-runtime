@@ -101,23 +101,29 @@ deleted because it was not a note.
 
 ## Retrieval
 
-Search combines SQLite full-text matching, local `bge-m3` embeddings, and one-hop typed
-links, then obeys a configurable context budget. Results include paths and original URLs.
+`brain_find` returns compact matches from approved canonical notes. `brain_read` resolves an
+exact stable ID and returns its body or a selected heading, with truncation and omitted
+sections reported explicitly. Legacy approved notes without frontmatter IDs use a
+deterministic path-derived ID. `brain_ask` returns up to four cited evidence notes in a
+4,000-token budget. Maps, sources, and review folders are excluded from normal retrieval.
+The MCP server reuses its API and index objects per resolved vault configuration. Reading
+an ID scans candidate frontmatter first and loads the full body only after finding a match.
 
-The two arms are combined by reciprocal rank fusion using each document's *best* rank within
-an arm. Summing a term for every matching chunk instead — which the first implementation did
-— scores documents by length, and since a raw capture runs many times longer than the note
-distilled from it, sources became structurally impossible to outrank. Distilled notes then
-take a small additional weight over raw sources, which stay searchable and citable.
+SQLite full-text search runs first. `brain_find` stays lexical; `brain_ask` tries local
+embeddings only when lexical search returns no results. Embedding failures leave lexical
+results available. Semantic fallback checks that stored vectors use the configured model
+and warns when the vector index has incomplete coverage. Foreground find and ask calls
+update the lexical index without doing embedding work. Reindexing walks only canonical
+content folders and compares file size, modification time, change time, and inode before
+opening notes. A changed index version triggers a full metadata validation. Changed notes
+are checked against their folder's domain and type before indexing. Markdown remains the
+source of truth, so a new note, edit, rename, status change, or deletion invalidates the
+corresponding index row. Write-triggered embedding refreshes retry only chunks still missing
+vectors.
 
-Maps need two adjustments, because a map lists the title and summary of every note it
-indexes. It is demoted slightly, or it would match almost any query about its subject and
-crowd out the notes themselves; and it is excluded from graph expansion, since every note
-links to its map and hops through one would make everything on it look mutually related.
-
-Graph scores are computed from a snapshot of the direct scores. Reading the live table let a
-score awarded to a neighbour be re-propagated when that neighbour came up as a later seed,
-compounding one hop into an arbitrarily large one.
+Graph expansion is opt-in. Scores are computed from a snapshot of direct scores. Reading
+the live table let a score awarded to a neighbour be re-propagated when that neighbour came
+up as a later seed, compounding one hop into an arbitrarily large one.
 
 Supported typed relationships are `about`, `created-by`, `contradicts`, `derived-from`,
 `requires`, `similar-to`, `supports`, and `uses`. Links work in both directions during
