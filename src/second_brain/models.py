@@ -42,6 +42,7 @@ DOMAIN_FOLDER = {
 
 
 def folder_for(domain: str, note_type: str) -> str:
+    """Schema-3 folder for a note. Used only to read and migrate schema-3 vaults."""
     return f"{DOMAIN_FOLDER[domain]}/{FOLDER_FOR_TYPE[note_type]}"
 
 # The layout the code expects, stamped into the vault so the two can be compared.
@@ -52,7 +53,19 @@ def folder_for(domain: str, note_type: str) -> str:
 #   3 — same folders as 2; the stamp gained axis validation and dropped its timestamp,
 #       and runtimes older than this reorganise a vault before checking the stamp, so
 #       they must not be allowed to write here
-SCHEMA_VERSION = 3
+#   4 — folders express lifecycle: Inbox/ Notes/ Sources/ Maps/ Archive/ Views/; type and
+#       domain move to frontmatter, maps are generated from tags, Reviews/ is retired
+SCHEMA_VERSION = 4
+
+# Schema 4 lifecycle folders. Taxonomy never becomes a path.
+INBOX_FOLDER = "Inbox"
+NOTES_FOLDER = "Notes"
+ARCHIVE_FOLDER = "Archive"
+VIEWS_FOLDER = "Views"
+INDEXED_FOLDERS = (NOTES_FOLDER, INBOX_FOLDER)
+
+STATUS_INBOX = "inbox"
+STATUS_APPROVED = "approved"
 
 # Tracked on purpose: it has to travel with the notes, so it cannot live under the
 # gitignored .second-brain/ index that a clone never receives.
@@ -66,11 +79,13 @@ TAG_REGISTRY_PATH = f"{MAPS_FOLDER}/Tag Registry.md"
 # segment. Retired: removed at startup when empty, left alone when they still hold notes.
 RETIRED_FOLDERS = ("Inbox", "Knowledge", "Resources", "Notes", "Prompts", "Skills", "Projects", "Essays")
 
-MIN_TAGS = 2
+MIN_TAGS = 1
+MAX_TAGS = 5
 # A runaway guard, not a style rule: long prose is fine, a pasted document is not.
 MAX_SUMMARY = 1500
-MIN_ALIASES = 2
-MIN_MAPS = 1
+# Schema-3 gate values. Kept only until validation.py moves to the schema 4 gate.
+MIN_ALIASES = 0
+MIN_MAPS = 0
 
 TAG_RE = re.compile(r"\A[a-z0-9]+(?:-[a-z0-9]+)*\Z")
 
@@ -93,6 +108,10 @@ LEGACY_KIND_TO_TYPE = {
 
 class ValidationError(ValueError):
     """A structural rule was broken. Raised instead of writing a non-conforming note."""
+
+
+class ApprovalMismatch(ValueError):
+    """The note changed after the reviewer saw it, so the approval does not apply."""
 
 
 class SchemaMismatch(RuntimeError):
@@ -170,6 +189,8 @@ class Connection:
 
 @dataclass
 class Proposal:
+    """A schema-3 review proposal. Kept so migration can read the queue on disk."""
+
     id: str
     note_type: str
     domain: str
@@ -224,3 +245,54 @@ class SavedItem:
     source_path: str
     status: str = "approved"
     warnings: list[str] = field(default_factory=list)
+
+
+@dataclass
+class CaptureResult:
+    """An inbox note written by capture or update_inbox."""
+
+    note_id: str
+    note_path: str
+    source_path: str
+    content_sha: str
+    problems: list[str] = field(default_factory=list)
+    updated_existing: bool = False
+    revises: str = ""
+    warnings: list[str] = field(default_factory=list)
+
+
+@dataclass
+class InboxItem:
+    note_id: str
+    note_path: str
+    title: str
+    note_type: str
+    domain: str
+    summary: str
+    body: str
+    tags: list[str]
+    aliases: list[str]
+    source_url: str
+    created: str
+    content_sha: str
+    text: str
+    revises: str = ""
+    problems: list[str] = field(default_factory=list)
+
+
+@dataclass
+class ApproveResult:
+    note_id: str
+    note_path: str
+    revised: bool = False
+    maps_updated: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+
+
+@dataclass
+class ArchiveResult:
+    note_id: str
+    archived: list[str]
+    receipt_path: str
+    warnings: list[str] = field(default_factory=list)
+
