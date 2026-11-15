@@ -33,21 +33,21 @@ def _seed(vault: Path) -> None:
     from second_brain.service import BrainService
 
     service = BrainService(vault)
-    proposal = service.prepare_save(
+    service.register_tags(["ui", "design"], meanings={"ui": "User interface.", "design": "Design."})
+    captured = service.capture(
         content="A compact approved fixture for MCP transport measurement.",
-        note_type="concept",
-        domain="tech",
         title="UI Microinteractions",
         summary="A guide to interface feedback, transitions, and responsive states.",
         body=(
             "## Details\n\nUse immediate visual feedback for actions. Keep transitions short "
             "and respect reduced motion."
         ),
+        note_type="concept",
+        domain="tech",
         tags=["ui", "design"],
         aliases=["microinteraction patterns", "微交互设计指南"],
-        maps=["UI Design"],
     )
-    service.commit_save(proposal.id)
+    service.approve(captured.note_id, content_sha=captured.content_sha)
 
 
 def _percentile(values: list[float], percentile: float) -> float:

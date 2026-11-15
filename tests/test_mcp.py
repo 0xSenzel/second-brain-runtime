@@ -1,116 +1,149 @@
 from __future__ import annotations
 
 import json
-import os
-import sys
 from pathlib import Path
 
 import anyio
-from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
+import httpx
+import pytest
+from fakes_surface import FakeIndex, FakeService
+
+from second_brain import mcp_server
+from second_brain.api import BrainAPI
+
+WRITE_TOOLS = {
+    "brain_capture", "brain_update_inbox", "brain_approve", "brain_discard",
+    "brain_register_tags", "brain_prepare_delete", "brain_commit_delete",
+}
+READ_TOOLS = {
+    "brain_find", "brain_ask", "brain_read", "brain_neighbors", "brain_open",
+    "brain_list_tags", "brain_inbox", "brain_digest", "brain_report", "brain_validate",
+}
 
 
-def test_mcp_api_reuses_instance_for_same_vault_configuration(tmp_path: Path, monkeypatch) -> None:
-    from second_brain import mcp_server
+@pytest.fixture
+def api(tmp_path: Path, monkeypatch):
+    instance = BrainAPI(tmp_path, service=FakeService(tmp_path), index=FakeIndex(), mode="writer")
+    monkeypatch.setattr(mcp_server, "_api", lambda: instance)
+    return instance
 
-    first_vault = tmp_path / "first-vault"
-    second_vault = tmp_path / "second-vault"
-    monkeypatch.setenv("SECOND_BRAIN_VAULT", str(first_vault))
 
+def call(name: str, arguments: dict):
+    async def run():
+        return await mcp_server.mcp.call_tool(name, arguments)
+
+    result = anyio.run(run)
+    content = result[0] if isinstance(result, tuple) else result
+    return json.loads(content[0].text)
+
+
+def test_api_is_reused_for_same_configuration_and_split_by_mode(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("SECOND_BRAIN_VAULT", str(tmp_path / "first"))
+    monkeypatch.setenv("SECOND_BRAIN_MODE", "reader")
     first = mcp_server._api()
-    repeated = mcp_server._api()
-
-    assert repeated is first
-    monkeypatch.setenv("SECOND_BRAIN_VAULT", str(second_vault))
-    changed = mcp_server._api()
-    assert changed is not first
-    assert changed.vault == second_vault.resolve()
+    assert mcp_server._api() is first
+    assert first.read_only
+    monkeypatch.setenv("SECOND_BRAIN_MODE", "writer")
+    assert mcp_server._api() is not first
 
 
-def test_stdio_mcp_exposes_review_first_workflow(tmp_path: Path) -> None:
-    async def scenario() -> None:
-        env = dict(os.environ)
-        env["SECOND_BRAIN_VAULT"] = str(tmp_path / "vault")
-        env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1] / "src")
-        parameters = StdioServerParameters(
-            command=sys.executable,
-            args=["-m", "second_brain.mcp_server"],
-            env=env,
-        )
-        async with stdio_client(parameters) as (read_stream, write_stream):
-            async with ClientSession(read_stream, write_stream) as session:
-                await session.initialize()
-                tools = await session.list_tools()
-                names = {tool.name for tool in tools.tools}
-                assert {
-                    "brain_prepare_save", "brain_commit_save", "brain_ask", "brain_find", "brain_read",
-                    "brain_open", "brain_list_tags"
-                } <= names
+def test_tool_set_matches_the_contract_and_uses_native_arguments() -> None:
+    tools = {tool.name: tool for tool in anyio.run(mcp_server.mcp.list_tools)}
 
-                registry_path = tmp_path / "vault" / "Maps" / "Tag Registry.md"
-                empty_tags = await session.call_tool("brain_list_tags", {})
-                assert json.loads(empty_tags.content[0].text)["tags"] == []
-                await session.call_tool(
-                    "brain_register_tags",
-                    {
-                        "tags_json": '["hypertrophy", "training-intensity"]',
-                        "meanings_json": json.dumps({
-                            "hypertrophy": "Muscle growth.",
-                            "training-intensity": "Training effort.",
-                        }),
-                    },
-                )
-                before = registry_path.read_text(encoding="utf-8")
-                listed = json.loads((await session.call_tool("brain_list_tags", {})).content[0].text)
-                assert listed["tags"] == [
-                    {"name": "hypertrophy", "meaning": "Muscle growth."},
-                    {"name": "training-intensity", "meaning": "Training effort."},
-                ]
-                assert registry_path.read_text(encoding="utf-8") == before
-                await session.call_tool(
-                    "brain_register_tags",
-                    {
-                        "tags_json": '["ui", "design-review"]',
-                        "meanings_json": json.dumps({
-                            "ui": "User interface design.",
-                            "design-review": "Reviewing interface designs.",
-                        }),
-                    },
-                )
+    assert set(tools) == READ_TOOLS | WRITE_TOOLS
+    for tool in tools.values():
+        assert not any(name.endswith("_json") for name in tool.inputSchema["properties"])
+    capture = tools["brain_capture"].inputSchema["properties"]
+    assert capture["tags"]["anyOf"][0]["type"] == "array"
+    assert capture["connections"]["anyOf"][0]["type"] == "array"
+    assert tools["brain_approve"].inputSchema["required"] == ["note_id", "content_sha"]
 
-                prepared = await session.call_tool(
-                    "brain_prepare_save",
-                    {
-                        "content_or_url": "A prompt for testing interfaces.",
-                        "note_type": "prompt",
-                        "body": "## Prompt\n\nReview the interface.",
-                        "title": "Interface Test",
-                        "summary": "Checks interface behavior.",
-                        "tags_json": '["ui", "design-review"]',
-                        "aliases_json": '["UI check", "interface review prompt"]',
-                        "maps_json": '["Interface Reviews"]',
-                    },
-                )
-                payload = json.loads(prepared.content[0].text)
-                assert payload["approval_required"] is True
-                assert payload["body"] == "## Prompt\n\nReview the interface."
-                assert payload["note_type"] == "prompt"
-                assert not (tmp_path / "vault" / "Prompts" / "Interface Test.md").exists()
 
-                committed = await session.call_tool(
-                    "brain_commit_save", {"proposal_id": payload["proposal_id"], "user_approved": True}
-                )
-                saved = json.loads(committed.content[0].text)
-                found = json.loads(
-                    (await session.call_tool("brain_find", {"query": "UI check"})).content[0].text
-                )
-                assert found["results"][0]["title"] == "Interface Test"
-                read = json.loads(
-                    (await session.call_tool(
-                        "brain_read", {"note_id": found["results"][0]["id"], "section": "Prompt"}
-                    )).content[0].text
-                )
-                assert read["path"] == saved["note_path"]
-                assert read["body"] == "## Prompt\n\nReview the interface."
+def test_instructions_are_short_and_state_the_rules() -> None:
+    text = mcp_server.INSTRUCTIONS
+    assert len(text) < 2000
+    for phrase in ("Search first", "Inbox/", "unreviewed", "content_sha", "verbatim", "Obsidian",
+                   "untrusted", "two steps", "archived"):
+        assert phrase.lower() in text.lower()
 
-    anyio.run(scenario)
+
+def test_capture_then_approve_through_tools(api) -> None:
+    captured = call("brain_capture", {
+        "content_or_url": "text", "title": "T", "summary": "S", "tags": ["ui"],
+        "connections": [{"relation": "uses", "target": "X"}],
+    })
+    assert captured["content_sha"] == "sha-new"
+
+    with pytest.raises(Exception, match="approval"):
+        call("brain_approve", {"note_id": "note-aaaaaaaaaaaa", "content_sha": "sha-1"})
+
+    approved = call("brain_approve", {
+        "note_id": "note-aaaaaaaaaaaa", "content_sha": "sha-1", "user_approved": True})
+    assert approved["status"] == "approved"
+
+
+def test_read_tools_return_json(api) -> None:
+    assert call("brain_find", {"query": "q"})["results"][0]["title"] == "Hit"
+    assert call("brain_inbox", {})["count"] == 1
+    assert call("brain_list_tags", {})["tags"][0]["name"] == "ui"
+    assert call("brain_open", {"path": "Notes/A.md"})["obsidian_uri"]
+    assert call("brain_digest", {})["inbox_count"] == 1
+
+
+def test_reader_mode_write_tool_returns_read_only_error(tmp_path: Path, monkeypatch) -> None:
+    reader = BrainAPI(tmp_path, service=FakeService(tmp_path), index=FakeIndex(), mode="reader")
+    monkeypatch.setattr(mcp_server, "_api", lambda: reader)
+    assert call("brain_capture", {"content_or_url": "x"}) == {
+        "error": "read-only: writes go through the brain service"
+    }
+
+
+def test_bearer_middleware_rejects_missing_or_wrong_token() -> None:
+    async def downstream(scope, receive, send):
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok"})
+
+    app = mcp_server.BearerTokenMiddleware(downstream, "secret")
+
+    async def scenario() -> list[int]:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            return [
+                (await client.post("/mcp")).status_code,
+                (await client.post("/mcp", headers={"Authorization": "Bearer nope"})).status_code,
+                (await client.post("/mcp", headers={"Authorization": "secret"})).status_code,
+                (await client.post("/mcp", headers={"Authorization": "Bearer secret"})).status_code,
+            ]
+
+    assert anyio.run(scenario) == [401, 401, 401, 200]
+
+
+def test_http_app_is_unwrapped_without_a_token() -> None:
+    assert not isinstance(mcp_server.http_app(None), mcp_server.BearerTokenMiddleware)
+    assert isinstance(mcp_server.http_app("t"), mcp_server.BearerTokenMiddleware)
+
+
+def test_writer_startup_promotes_once_and_starts_worker(api, monkeypatch) -> None:
+    started = []
+
+    class Worker:
+        def __init__(self, index, embedder):
+            pass
+
+        def start(self):
+            started.append(True)
+
+    monkeypatch.setattr(mcp_server, "EmbeddingWorker", Worker)
+    api.embedder = object()
+
+    mcp_server._start_writer_background()
+
+    assert api.service.names().count("promote_reviewed") == 1
+    assert started == [True]
+
+
+def test_reader_startup_does_nothing(tmp_path: Path, monkeypatch) -> None:
+    reader = BrainAPI(tmp_path, service=FakeService(tmp_path), index=FakeIndex(), mode="reader")
+    monkeypatch.setattr(mcp_server, "_api", lambda: reader)
+    mcp_server._start_writer_background()
+    assert reader.service.names() == []

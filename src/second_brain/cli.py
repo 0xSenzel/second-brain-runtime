@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
+import os
 import sys
 from pathlib import Path
+from typing import Any
 
-from .api import BrainAPI
-from .migration import MigrationPlanner
+from .api import DEFAULT_VAULT, BrainAPI
 from .models import DOMAINS, NOTE_TYPES
 
 
@@ -15,103 +17,154 @@ def parser() -> argparse.ArgumentParser:
     root.add_argument("--vault", help="Path to the Obsidian vault")
     commands = root.add_subparsers(dest="command", required=True)
 
-    commands.add_parser("init", help="Create the vault layout")
-    prepare = commands.add_parser("prepare", help="Prepare a capture for review")
-    prepare.add_argument("input", help="Text, URL, or local file path")
-    prepare.add_argument("--type", dest="note_type", default="concept",
-                         choices=sorted(NOTE_TYPES), help="Decides the type folder")
-    prepare.add_argument("--domain", default="tech", choices=sorted(DOMAINS),
-                         help="Which part of life this belongs to")
-    prepare.add_argument("--title")
-    prepare.add_argument("--summary", default="")
-    prepare.add_argument("--body-file", type=Path, help="Markdown body to review and save in the note")
-    prepare.add_argument("--tag", action="append", default=[])
-    prepare.add_argument("--alias", action="append", default=[])
-    prepare.add_argument("--map", action="append", default=[], dest="maps")
-    prepare.add_argument("--destination", default="", help="Optional path inside the type's folder")
-    prepare.add_argument("--creator", default="", help="Source creator, kept as provenance")
-    prepare.add_argument("--connections", default="[]", help="JSON array of typed connections")
+    capture = commands.add_parser("capture", help="Write an unreviewed note to Inbox/")
+    capture.add_argument("input", help="Text, URL, or local file path")
+    capture.add_argument("--type", dest="note_type", default="concept", choices=sorted(NOTE_TYPES))
+    capture.add_argument("--domain", default="tech", choices=sorted(DOMAINS))
+    capture.add_argument("--title", default="")
+    capture.add_argument("--summary", default="")
+    capture.add_argument("--body-file", type=Path, help="Markdown body to keep in the note")
+    capture.add_argument("--tag", action="append", default=[])
+    capture.add_argument("--alias", action="append", default=[])
+    capture.add_argument("--creator", default="", help="Source creator, kept as provenance")
+    capture.add_argument("--source-url", default="")
+    capture.add_argument("--source-kind", default="")
+    capture.add_argument("--revises", default="", help="Note ID this capture proposes to revise")
+    capture.add_argument("--connections", default="[]", help="JSON array of typed connections")
 
-    tags = commands.add_parser("register-tags", help="Add tags to the controlled vocabulary")
-    tags.add_argument("tag", nargs="+")
-    commands.add_parser("validate", help="Check every note against the structural rules")
+    inbox = commands.add_parser("inbox", help="List inbox items, or show one in full")
+    inbox.add_argument("note_id", nargs="?", default="")
+    approve = commands.add_parser("approve", help="Approve one inbox note (a human, out of band)")
+    approve.add_argument("note_id")
+    approve.add_argument("--sha", default="", help="content_sha; defaults to the note's current one")
+    discard = commands.add_parser("discard", help="Archive an inbox note")
+    discard.add_argument("note_id")
+    discard.add_argument("--reason", default="")
+    commands.add_parser("promote", help="Promote notes approved by editing status in Obsidian")
 
-    approve = commands.add_parser("approve", help="Approve and save a pending proposal")
-    approve.add_argument("proposal_id")
-    reject = commands.add_parser("reject", help="Reject a pending proposal")
-    reject.add_argument("proposal_id")
-    commands.add_parser("pending", help="List pending proposals")
+    digest = commands.add_parser("digest", help="Short inbox digest")
+    digest.add_argument("--json", action="store_true", help="Print JSON instead of text")
+    report = commands.add_parser("report", help="Maintenance report")
+    report.add_argument("--stale-days", type=int, default=180)
 
+    find = commands.add_parser("find", help="Find matching notes")
+    find.add_argument("query")
+    find.add_argument("--limit", type=int, default=6)
     ask = commands.add_parser("ask", help="Retrieve a compact evidence bundle")
     ask.add_argument("query")
     ask.add_argument("--max-tokens", type=int, default=2500)
     ask.add_argument("--hops", type=int, default=1)
-    find = commands.add_parser("find", help="Find matching saved items")
-    find.add_argument("query")
-    find.add_argument("--limit", type=int, default=6)
 
-    commands.add_parser("reindex", help="Refresh the local graph and search index")
+    commands.add_parser("reindex", help="Refresh the search index (lexical)")
+    commands.add_parser("embed", help="Embed chunks that have no vector yet")
+    commands.add_parser("validate", help="Check notes against the structural rules")
     commands.add_parser("doctor", help="Check the local runtime")
-    migrate = commands.add_parser("migrate", help="Prepare a copy-only pilot migration")
-    migrate.add_argument("source_vault")
-    migrate.add_argument("--limit", type=int, default=20)
-    migrate.add_argument("--apply", action="store_true", help="Create pending review proposals")
+    tags = commands.add_parser("register-tags", help="Add tags to the controlled vocabulary")
+    tags.add_argument("tag", nargs="+")
+
+    migrate = commands.add_parser("migrate-v4", help="Migrate a schema-3 vault to schema 4")
+    mode = migrate.add_mutually_exclusive_group()
+    mode.add_argument("--dry-run", action="store_true", help="Print the plan only (default)")
+    mode.add_argument("--apply", action="store_true", help="Apply the plan")
+    migrate.add_argument("--tag-map", type=Path, help="JSON file {old_tag: new_tag | null}")
+    migrate.add_argument("--map-tags", type=Path, help="JSON file {map name: [tags]}")
     return root
+
+
+def _jsonable(value: Any) -> Any:
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return dataclasses.asdict(value)
+    for name in ("as_dict", "to_dict"):
+        method = getattr(value, name, None)
+        if callable(method):
+            return method()
+    return value
+
+
+def _load_json(path: Path | None) -> Any:
+    return json.loads(path.read_text(encoding="utf-8")) if path else None
+
+
+def _migrate_v4(args: argparse.Namespace) -> Any:
+    # Imported lazily: the module only matters for this command, and it must not
+    # construct a BrainAPI (that would touch a schema-3 vault).
+    from . import migrate_v4
+
+    vault = Path(args.vault or os.environ.get("SECOND_BRAIN_VAULT") or DEFAULT_VAULT).expanduser().resolve()
+    plan = migrate_v4.plan(vault, tag_map=_load_json(args.tag_map), map_tags=_load_json(args.map_tags))
+    if args.apply:
+        return migrate_v4.apply(plan)
+    return {"dry_run": True, "plan": _jsonable(plan)}
+
+
+def run(args: argparse.Namespace) -> Any:
+    if args.command == "migrate-v4":
+        return _migrate_v4(args)
+    api = BrainAPI(args.vault)
+    command = args.command
+    if command == "capture":
+        return api.capture(
+            args.input,
+            title=args.title,
+            summary=args.summary,
+            body=args.body_file.read_text(encoding="utf-8") if args.body_file else "",
+            note_type=args.note_type,
+            domain=args.domain,
+            tags=args.tag,
+            aliases=args.alias,
+            connections=json.loads(args.connections),
+            source_url=args.source_url,
+            source_kind=args.source_kind,
+            source_creator=args.creator,
+            revises=args.revises,
+        )
+    if command == "inbox":
+        return api.inbox(args.note_id)
+    if command == "approve":
+        sha = args.sha
+        if not sha:
+            sha = api.inbox(args.note_id)["item"]["content_sha"]
+        # The command line is the human channel, so it is exempt from approval=human.
+        return api.approve(args.note_id, sha, approved=True, out_of_band=True)
+    if command == "discard":
+        return api.discard(args.note_id, reason=args.reason)
+    if command == "promote":
+        return api.promote()
+    if command == "digest":
+        data = api.digest()
+        return data if args.json else data["text"]
+    if command == "report":
+        return api.report(stale_days=args.stale_days)
+    if command == "find":
+        return api.find(args.query, limit=args.limit)
+    if command == "ask":
+        return api.ask(args.query, max_tokens=args.max_tokens, hops=args.hops)
+    if command == "reindex":
+        return api.reindex()
+    if command == "embed":
+        return api.embed()
+    if command == "validate":
+        return api.validate()
+    if command == "doctor":
+        return api.doctor()
+    if command == "register-tags":
+        return api.register_tags(args.tag)
+    raise AssertionError(f"Unhandled command: {command}")
 
 
 def main(argv: list[str] | None = None) -> None:
     args = parser().parse_args(argv)
-    api = BrainAPI(args.vault)
     try:
-        if args.command == "init":
-            result = api.doctor()
-        elif args.command == "prepare":
-            result = api.prepare_save(
-                content_or_url=args.input,
-                note_type=args.note_type,
-                domain=args.domain,
-                title=args.title,
-                summary=args.summary,
-                body=args.body_file.read_text(encoding="utf-8") if args.body_file else None,
-                tags=args.tag,
-                aliases=args.alias,
-                maps=args.maps,
-                destination=args.destination,
-                source_creator=args.creator,
-                connections=json.loads(args.connections),
-            )
-        elif args.command == "register-tags":
-            result = api.register_tags(args.tag)
-        elif args.command == "validate":
-            result = api.validate()
-        elif args.command == "approve":
-            result = api.commit_save(args.proposal_id, approved=True)
-        elif args.command == "reject":
-            result = api.reject_save(args.proposal_id)
-        elif args.command == "pending":
-            result = api.pending()
-        elif args.command == "ask":
-            result = api.ask(args.query, max_tokens=args.max_tokens, hops=args.hops)
-        elif args.command == "find":
-            result = api.find(args.query, limit=args.limit)
-        elif args.command == "reindex":
-            result = api.reindex()
-        elif args.command == "doctor":
-            result = api.doctor()
-        elif args.command == "migrate":
-            planner = MigrationPlanner(api.service)
-            candidates = planner.plan(args.source_vault, limit=args.limit)
-            result = planner.apply(candidates) if args.apply else {
-                "dry_run": True,
-                "count": len(candidates),
-                "candidates": [candidate.as_dict() for candidate in candidates],
-            }
-        else:
-            raise AssertionError(f"Unhandled command: {args.command}")
+        result = run(args)
     except Exception as error:
         print(json.dumps({"error": str(error)}, ensure_ascii=False, indent=2), file=sys.stderr)
         raise SystemExit(1) from error
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+    if isinstance(result, str):
+        print(result)
+    else:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    if isinstance(result, dict) and "error" in result and len(result) == 1:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
