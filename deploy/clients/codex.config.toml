@@ -3,7 +3,7 @@
 # Export SECOND_BRAIN_HTTP_TOKEN in the environment that launches Codex.
 
 [mcp_servers.second-brain]
-url = "http://127.0.0.1:8765/mcp"
+url = "http://127.0.0.1:18765/mcp"
 bearer_token_env_var = "SECOND_BRAIN_HTTP_TOKEN"
 
 # FALLBACK: reader-mode stdio with its own index. Use instead of the table above when the

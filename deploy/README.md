@@ -129,9 +129,9 @@ Start the writer and check it:
 docker compose -f $DEP/compose.yaml up -d second-brain
 docker compose -f $DEP/compose.yaml ps second-brain          # healthy
 TOKEN=$(grep ^SECOND_BRAIN_HTTP_TOKEN $DEP/second-brain.env | cut -d= -f2)
-curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8765/mcp                     # 401 without token
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:18765/mcp                     # 401 without token
 curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $TOKEN" \
-  -H 'Accept: application/json, text/event-stream' http://127.0.0.1:8765/mcp           # not 401
+  -H 'Accept: application/json, text/event-stream' http://127.0.0.1:18765/mcp           # not 401
 docker exec second-brain brain doctor
 ```
 

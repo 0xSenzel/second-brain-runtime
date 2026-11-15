@@ -36,7 +36,7 @@ flowchart LR
     you --> cc
     hermes -- "MCP over HTTP" --> brain
     hermes --> capture
-    cc -- "MCP over HTTP<br/>127.0.0.1:8765" --> brain
+    cc -- "MCP over HTTP<br/>127.0.0.1:18765" --> brain
     brain -- "embed" --> ollama
     brain -- "read/write" --> vault
     hermes -. "read-only mount" .-> vault
@@ -295,7 +295,7 @@ flowchart LR
 ```
 
 - The writer listens on the Compose network. The host publishes it only on
-  `127.0.0.1:8765`, and every request needs the bearer token.
+  `127.0.0.1:18765`, and every request needs the bearer token.
 - Captured text is stored as data and marked untrusted. Tools never act on instructions
   in it.
 - Embeddings run locally. Only the small evidence packs that search returns go to the
@@ -343,7 +343,7 @@ flowchart TB
     s3["3. Stop writers, pause Obsidian Sync,<br/>brain migrate-v4 --apply"]:::live
     s4["4. Start second-brain, switch Hermes config,<br/>skills, plugin, cron; Hermes /vault read-only"]:::live
     s5["5. Verify: capture → inbox → approve,<br/>discard, Obsidian promotion, digest, git log"]
-    s6["Point Claude Code / Codex<br/>at 127.0.0.1:8765"]:::live
+    s6["Point Claude Code / Codex<br/>at 127.0.0.1:18765"]:::live
     s0 --> s1 --> s2 --> s3 --> s4 --> s5 --> s6
     s3 -. "fails" .-> r3["git reset to the snapshot tag"]
     s4 -. "fails" .-> r4["Restore old Hermes config,<br/>skills, and image"]

@@ -255,7 +255,7 @@ Steps:
   Ollama at `http://ollama:11434`.
 - Hermes connects to it over HTTP if its MCP client supports that; otherwise Hermes keeps
   a stdio writer and the Mac clients run as readers.
-- Mac clients (Codex, Claude Code) connect over `http://127.0.0.1:8765/mcp` or run as
+- Mac clients (Codex, Claude Code) connect over `http://127.0.0.1:18765/mcp` or run as
   `reader` stdio servers with their own index path.
 - Hermes cron: daily digest (weekdays 08:30), weekly report (Sunday 18:00).
 - Skills are rewritten for capture → digest → approve.

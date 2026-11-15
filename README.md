@@ -125,6 +125,7 @@ brain [--vault PATH] COMMAND
 | `SECOND_BRAIN_APPROVAL` | `chat` | `chat` or `human` |
 | `SECOND_BRAIN_INDEX_PATH` | `<vault>/.second-brain/index.sqlite3` | Index location. Set it for every reader. |
 | `SECOND_BRAIN_HTTP_TOKEN` | unset | Bearer token required on every HTTP request when set |
+| `SECOND_BRAIN_ALLOWED_HOSTS` | unset | Comma-separated `Host` header values accepted over HTTP besides loopback, for example `second-brain:8765` on a container network |
 | `SECOND_BRAIN_GIT_AUTOCOMMIT` | `1` | `0` turns off the git commit per write |
 | `OLLAMA_URL` | `http://localhost:11434` | Embedding server |
 | `SECOND_BRAIN_EMBED_MODEL` | `bge-m3` | Embedding model |
@@ -145,7 +146,7 @@ Streamable HTTP, with a token:
 SECOND_BRAIN_HTTP_TOKEN=TOKEN second-brain-mcp --transport streamable-http --host 127.0.0.1 --port 8765
 ```
 
-Clients connect to `http://127.0.0.1:8765/mcp` and send `Authorization: Bearer TOKEN`.
+Clients connect to `http://127.0.0.1:18765/mcp` and send `Authorization: Bearer TOKEN`.
 Replace TOKEN with a long random string. The server warns when it listens on a non-loopback
 host without a token.
 

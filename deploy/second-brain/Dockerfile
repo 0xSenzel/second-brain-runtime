@@ -15,7 +15,7 @@ FROM python:${PYTHON_VERSION}-slim-bookworm AS clone
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 ARG RUNTIME_REPO=https://github.com/0xSenzel/second-brain-runtime.git
-ARG RUNTIME_REF=v4.0.0
+ARG RUNTIME_REF=v4.0.1
 RUN git clone --depth 1 --branch "${RUNTIME_REF}" "${RUNTIME_REPO}" /src
 
 FROM scratch AS repo
@@ -27,7 +27,7 @@ COPY --from=repo / /src
 RUN python -m build --wheel --outdir /wheels /src
 
 FROM python:${PYTHON_VERSION}-slim-bookworm
-ARG RUNTIME_REF=v4.0.0
+ARG RUNTIME_REF=v4.0.1
 LABEL org.opencontainers.image.title="second-brain-runtime" \
       org.opencontainers.image.version="${RUNTIME_REF}"
 

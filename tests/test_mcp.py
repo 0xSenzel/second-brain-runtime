@@ -147,3 +147,39 @@ def test_reader_startup_does_nothing(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(mcp_server, "_api", lambda: reader)
     mcp_server._start_writer_background()
     assert reader.service.names() == []
+
+
+def test_http_transport_accepts_listed_container_host_and_rejects_others(monkeypatch) -> None:
+    import anyio
+    import httpx
+
+    from second_brain import mcp_server
+
+    monkeypatch.setenv("SECOND_BRAIN_ALLOWED_HOSTS", "second-brain:8765")
+    app = mcp_server.http_app("t0ken")
+    body = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-03-26",
+            "capabilities": {},
+            "clientInfo": {"name": "t", "version": "0"},
+        },
+    }
+    headers = {
+        "Authorization": "Bearer t0ken",
+        "Accept": "application/json, text/event-stream",
+        "Content-Type": "application/json",
+    }
+
+    async def post(host: str) -> int:
+        async with mcp_server.mcp.session_manager.run():
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(transport=transport, base_url=f"http://{host}") as client:
+                response = await client.post("/mcp", json=body, headers=headers)
+                return response.status_code
+
+    assert anyio.run(post, "second-brain:8765") == 200
+    app = mcp_server.http_app("t0ken")
+    assert anyio.run(post, "evil.example:8765") == 421

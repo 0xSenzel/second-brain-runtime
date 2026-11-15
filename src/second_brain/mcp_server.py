@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
 from .api import DEFAULT_VAULT, BrainAPI, EmbeddingWorker
 
@@ -263,7 +264,30 @@ class BearerTokenMiddleware:
         await send({"type": "http.response.body", "body": body})
 
 
+LOOPBACK_HOSTS = ["127.0.0.1:*", "localhost:*", "[::1]:*"]
+
+
+def allowed_hosts() -> list[str]:
+    """Host headers the HTTP transport accepts: loopback plus SECOND_BRAIN_ALLOWED_HOSTS.
+
+    The MCP library rejects any other Host with 421 to stop DNS rebinding. A client on a
+    container network addresses the server by its service name (second-brain:8765), so
+    that name has to be listed explicitly; nothing is opened up by default.
+    """
+    extra = os.environ.get("SECOND_BRAIN_ALLOWED_HOSTS", "")
+    return LOOPBACK_HOSTS + [host.strip() for host in extra.split(",") if host.strip()]
+
+
 def http_app(token: str | None = None) -> Any:
+    hosts = allowed_hosts()
+    mcp.settings.transport_security = TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=hosts,
+        allowed_origins=[f"http://{host}" for host in hosts],
+    )
+    # FastMCP captures transport_security when it first builds its session manager and
+    # then reuses it. Drop any earlier one so these settings always take effect.
+    mcp._session_manager = None
     app = mcp.streamable_http_app()
     return BearerTokenMiddleware(app, token) if token else app
 

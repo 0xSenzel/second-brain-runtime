@@ -4,12 +4,12 @@
 
 services:
   second-brain:
-    image: second-brain-runtime:4.0.0
+    image: second-brain-runtime:4.0.1
     pull_policy: never
     build:
       context: ./second-brain
       args:
-        RUNTIME_REF: v4.0.0
+        RUNTIME_REF: v4.0.1
     container_name: second-brain
     restart: unless-stopped
     init: true
@@ -23,8 +23,10 @@ services:
       SECOND_BRAIN_EMBED_MODEL: bge-m3
       SECOND_BRAIN_MODE: writer
       SECOND_BRAIN_APPROVAL: chat
+      # Host headers accepted besides loopback; Hermes addresses the service by name.
+      SECOND_BRAIN_ALLOWED_HOSTS: second-brain:8765
     ports:
-      - "127.0.0.1:8765:8765"        # loopback only: Mac clients; Hermes uses http://second-brain:8765
+      - "127.0.0.1:18765:8765"        # loopback only: Mac clients; Hermes uses http://second-brain:8765
     networks:
       - default
     depends_on:
