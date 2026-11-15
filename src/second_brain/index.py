@@ -377,6 +377,26 @@ class BrainIndex:
                 "backend": "sqlite-vec" if self.vec_enabled else "python",
             }
 
+    def similar_pairs(self, *, threshold: float = 0.92) -> list[tuple[str, str, float]]:
+        """Approved or inbox note pairs whose first chunks are near-identical in meaning.
+
+        The weekly report uses this to flag likely duplicates. First chunks carry the title
+        and summary, which is where two captures of one idea look alike; comparing every
+        chunk would flag notes that merely quote the same source.
+        """
+        with self._connect() as db:
+            rows = db.execute(
+                "SELECT node_id, vector FROM chunks WHERE chunk_index=0 AND vector IS NOT NULL"
+            ).fetchall()
+        vectors = [(row["node_id"], json.loads(row["vector"])) for row in rows]
+        pairs: list[tuple[str, str, float]] = []
+        for position, (left_id, left) in enumerate(vectors):
+            for right_id, right in vectors[position + 1 :]:
+                similarity = _cosine(left, right)
+                if similarity >= threshold:
+                    pairs.append((left_id, right_id, round(similarity, 4)))
+        return sorted(pairs, key=lambda pair: pair[2], reverse=True)
+
     # -- indexing --------------------------------------------------------------------
 
     def reindex(self, *, embed_vectors: bool = False) -> dict[str, int | str | list[str]]:

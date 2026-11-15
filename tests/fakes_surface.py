@@ -121,7 +121,7 @@ class FakeIndex:
         self.calls.append(("reindex", (), {"embed_vectors": embed_vectors}))
         return {"indexed": 1, "warnings": []}
 
-    def find(self, query: str, limit: int = 5, include_inbox: bool = True) -> list[dict]:
+    def search(self, query: str, limit: int = 5, include_inbox: bool = True) -> list[dict]:
         self.calls.append(("find", (query,), {"limit": limit, "include_inbox": include_inbox}))
         return list(self.hits)
 

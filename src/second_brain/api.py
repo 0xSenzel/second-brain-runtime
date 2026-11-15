@@ -357,7 +357,7 @@ class BrainAPI:
         warnings = self._refresh()
         warnings += self._reindex_for_read()
         limit = min(max(int(limit), 1), 10)
-        found = self.index.find(query, limit=limit, include_inbox=True)
+        found = self.index.search(query, limit=limit, include_inbox=True)
         if isinstance(found, dict):
             found = found.get("results", [])
         results = [hit.as_dict() if hasattr(hit, "as_dict") else dict(hit) for hit in found]
@@ -404,7 +404,7 @@ class BrainAPI:
                 embeddings_available = bool(self.embedder.available())
             except Exception:
                 embeddings_available = False
-        coverage = getattr(self.index, "embedding_coverage", None)
+        coverage = getattr(self.index, "vector_stats", None)
         try:
             coverage = coverage() if callable(coverage) else None
         except Exception as error:
