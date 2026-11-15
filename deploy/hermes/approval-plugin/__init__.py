@@ -27,9 +27,13 @@ SHA_PREFIX = 8
 def _payload(envelope: dict) -> Any:
     if not envelope.get("ok"):
         raise RuntimeError(str(envelope.get("error") or "brain call failed"))
-    if "structuredContent" in envelope:
-        return envelope["structuredContent"]
+    # The brain's tools return JSON as text. FastMCP also emits that text wrapped as
+    # structuredContent {"result": "<text>"}, and Hermes forwards both, so the text in
+    # `result` is the payload; structuredContent only fills in when it is absent.
     value = envelope.get("result")
+    structured = envelope.get("structuredContent")
+    if not value and isinstance(structured, dict):
+        value = structured.get("result", structured)
     if isinstance(value, str):
         try:
             return json.loads(value)
