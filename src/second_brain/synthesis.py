@@ -51,6 +51,7 @@ def digest(service: Any, index: Any = None, *, now: datetime | None = None) -> d
         items.append(
             {
                 "note_id": item.note_id,
+                "sha8": (item.content_sha or "")[:8],
                 "title": item.title,
                 "note_type": item.note_type,
                 "age_days": _age_days(item.created, now),
@@ -78,7 +79,10 @@ def render_digest(data: dict[str, Any], *, limit: int = DIGEST_LIMIT) -> str:
     lines = []
     for entry in data["items"]:
         age = entry.get("age_days")
-        line = f"- {entry['title']} [{entry['note_id']}]"
+        # The sha prefix lets a reviewer approve straight from the digest; an edit made
+        # after the digest changes it, so the approval refuses instead of applying.
+        sha8 = f" {entry['sha8']}" if entry.get("sha8") else ""
+        line = f"- {entry['title']} [{entry['note_id']}{sha8}]"
         if age is not None:
             line += f" {age}d"
         if entry.get("revises"):

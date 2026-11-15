@@ -81,17 +81,19 @@ Add `- path: compose.second-brain.yaml` to the `include:` list at the top of
 
 Write the two migration files outside the vault, so the vault tree stays clean:
 
-- `$DEP/migration/tag-map.json`: `{"old-tag": "new-tag", "unwanted-tag": null}`
-- `$DEP/migration/map-tags.json`: the map-to-tags file defined by `migrate_v4.py`.
-  I could not verify its exact format (the module is not in this branch). Read
-  `src/second_brain/migrate_v4.py` at the tag and follow its docstring.
+- `$DEP/migration/tag-map.yaml`: `{old-tag: new-tag, unwanted-tag: null}`. Every
+  registered tag not listed keeps its name.
+- `$DEP/migration/map-tags.yaml`: `{Map Name: [tag, tag]}`, one entry per file in `Maps/`.
+
+Drafts of both, built from the vault's current tags and maps, are reviewed with you
+before this step. JSON is also accepted, because `plan()` reads the files as YAML.
 
 Dry run. It is read-only, so it is safe with Hermes running:
 
 ```bash
 docker run --rm -v $VAULT:/vault:ro -v $DEP/migration:/migration:ro \
   -e SECOND_BRAIN_VAULT=/vault --entrypoint brain second-brain-runtime:4.0.0 \
-  migrate-v4 --dry-run --tag-map /migration/tag-map.json --map-tags /migration/map-tags.json > /tmp/v4-plan.json
+  migrate-v4 --dry-run --tag-map /migration/tag-map.yaml --map-tags /migration/map-tags.yaml > /tmp/v4-plan.json
 ```
 
 Read the plan: title clashes, dropped tags, pending proposals converted, unmapped maps.
@@ -104,7 +106,7 @@ Fix the map files until the plan is acceptable. Do not continue with unresolved 
 docker compose -f $DEP/compose.yaml stop hermes video-worker
 docker run --rm -v $VAULT:/vault -v $DEP/migration:/migration:ro \
   -e SECOND_BRAIN_VAULT=/vault --entrypoint brain second-brain-runtime:4.0.0 \
-  migrate-v4 --apply --tag-map /migration/tag-map.json --map-tags /migration/map-tags.json
+  migrate-v4 --apply --tag-map /migration/tag-map.yaml --map-tags /migration/map-tags.yaml
 git -C $VAULT log --oneline -3          # one migration commit on top of the snapshot
 cat $VAULT/.brain-schema.json           # schema_version 4
 ```
@@ -215,5 +217,3 @@ Mac clients: merge the entries from `clients/` into the real configs yourself **
   port is untested against a live Hermes, and skills must pass the video's canonical URL as
   `source_url` so retention can link the note to the job.
 - File paths cannot cross containers. Skills now pass source text as `content`.
-- `brain_digest` should print `note_id` and the first 8 characters of `content_sha` per line,
-  so the plugin commands work straight from the digest.
