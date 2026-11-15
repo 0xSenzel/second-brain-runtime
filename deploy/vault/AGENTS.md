@@ -88,7 +88,7 @@ Approval needs these to hold:
 The user can also approve without you:
 
 - in Obsidian: set `status: approved` in `Views/Review.base` or the note;
-- in Telegram: `/brain-approve <note_id> <sha8>`;
+- in Telegram: `/brain_review`, then `/brain_approve` (approves the version just shown);
 - in a terminal: `brain approve <note_id>`.
 
 If a note changes after review, the old `content_sha` is refused. Re-read the note with

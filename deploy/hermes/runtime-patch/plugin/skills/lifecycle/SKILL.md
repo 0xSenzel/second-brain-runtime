@@ -58,7 +58,7 @@ container.
 
 A note in `Inbox/` (status `inbox`) keeps the media. The media becomes eligible for cleanup
 when the note is approved (it moves to `Notes/`) or discarded (it moves to `Archive/Inbox/`).
-Approval happens through `brain_approve`, the `/brain-approve` command, or Obsidian.
+Approval happens through `brain_approve`, the `/brain_approve` command, or Obsidian.
 
 If you drop an inline draft that was never captured, close its review:
 

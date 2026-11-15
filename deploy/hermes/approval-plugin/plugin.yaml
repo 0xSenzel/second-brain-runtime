@@ -1,6 +1,6 @@
 name: second-brain-approval
 kind: standalone
-version: 0.1.0
+version: 0.2.0
 manifest_version: 2
 description: Out-of-band approve/discard commands for second-brain Inbox notes. Runs without the model.
 author: Senzel

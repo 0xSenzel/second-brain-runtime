@@ -83,7 +83,7 @@ That old image only matches a schema 3 vault.
 ## Not ported or not verified
 
 - Not run against a live Hermes. No end-to-end capture, approve and prune cycle was done.
-- `/brain-approve` through the approval plugin uses `ctx.call_mcp`. I did not verify that
+- `/brain_approve` through the approval plugin uses `ctx.call_mcp`. I did not verify that
   it fires `post_tool_call`. If it does not, cleanup waits for the hourly worker run.
 - Match keys are `source_url` only. The skills must pass the video's canonical URL as
   `source_url` on every capture, or the job is never linked.

@@ -19,7 +19,7 @@ model, calls the brain's `brain_approve` with the right `content_sha`.
 - `second-brain-approver` entry (plugin-only): same URL and token, `tools.include: []`.
 - Server runs `SECOND_BRAIN_APPROVAL=chat`, so the plugin's call (`user_approved=true`) is accepted.
   Do not use `human` mode with this plugin: the plugin would be refused too.
-- `/brain-approve <id> <sha8>` re-reads the Inbox and approves only when `sha8` matches the
+- `/brain_approve <id> <sha8>` re-reads the Inbox and approves only when `sha8` matches the
   current note. An edit after review changes the sha and the command refuses.
 
 ## Install (changes live state; see deploy/README.md step 3)
@@ -42,4 +42,4 @@ The live plugin directory is `~/.hermes/plugins` on the host. In the container i
 - Who may run a command is set by the gateway's slash-access policy and Telegram allow-list.
 - Assumes `brain_inbox` returns items with `note_id`, `title`, `summary`, `body`,
   `content_sha`. Edit `_items` if the schema-4 tool differs.
-- Not run against a live Hermes. Test with `/brain-review` on a test note first.
+- Not run against a live Hermes. Test with `/brain_review` on a test note first.

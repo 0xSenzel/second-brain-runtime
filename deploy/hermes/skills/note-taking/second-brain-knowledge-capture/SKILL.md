@@ -127,8 +127,9 @@ Approval of one item, or of tag registration, is not approval of any other item.
   read), and `user_approved: true`. A `content_sha` mismatch means the note changed;
   re-read it, show it again, and ask again.
 - If `brain_approve` is not available, approval is out of band. Tell the user to send
-  `/brain-approve <note_id> <sha8>` in this chat (the first 8 characters of
-  `content_sha`), or to set `status: approved` in the note's frontmatter in Obsidian.
+  `/brain_review` (shows the oldest Inbox note, or `/brain_review <note_id>` for one note)
+  and then `/brain_approve`, which approves exactly the version that review showed; or to
+  set `status: approved` in the note's frontmatter in Obsidian.
   Do not claim the note is approved until `brain_find` or `brain_read` shows it in
   `Notes/`.
 

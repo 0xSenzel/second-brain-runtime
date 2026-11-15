@@ -49,7 +49,7 @@ flowchart LR
 |---|---|---|
 | `second-brain` | Its own container, pinned to a tagged runtime build | The only process that writes the vault. Serves MCP over streamable HTTP. |
 | Hermes | `hermes` container | Telegram agent. Extracts content, calls brain tools, sends the daily digest. |
-| Approval plugin | Inside Hermes | Runs `/brain-approve` without a model turn, so approval comes from you, not the model. |
+| Approval plugin | Inside Hermes | Runs `/brain_review` and `/brain_approve` without a model turn, so approval comes from you, not the model. |
 | Ollama | `ollama` container | Local `bge-m3` embeddings. No note text leaves the machine for embedding. |
 | Vault | Mac file system, bind-mounted | Source of truth. Git records every write. Obsidian Sync carries it to the phone. |
 | Claude Code, Codex | Mac | Connect to the writer over HTTP on `127.0.0.1`, or run a read-only stdio server. |
@@ -105,7 +105,7 @@ flowchart TB
 stateDiagram-v2
     [*] --> Inbox: brain_capture
     Inbox --> Inbox: brain_update_inbox
-    Inbox --> Notes: approve (chat, /brain-approve, CLI)
+    Inbox --> Notes: approve (chat, /brain_approve, CLI)
     Inbox --> Notes: status approved in Obsidian, then promote_reviewed
     Inbox --> Inbox: promotion fails, review_problems written
     Inbox --> ArchiveInbox: brain_discard
@@ -153,9 +153,14 @@ sequenceDiagram
     B-->>H: Inbox items with note_id and sha prefix
     H-->>TG: Digest
 
-    You->>TG: /brain-approve note-… 1a2b3c4d
+    You->>TG: /brain_review
     TG->>P: Command (no model turn)
-    P->>B: brain_inbox(note_id) then brain_approve(note_id, content_sha)
+    P->>B: brain_inbox, then brain_inbox(oldest note_id)
+    B-->>P: Full note + content_sha
+    P-->>TG: Summary and body verbatim
+    You->>TG: /brain_approve
+    TG->>P: Command (no model turn)
+    P->>B: brain_inbox(note_id), sha unchanged?, then brain_approve(note_id, content_sha)
     B->>B: Check sha and approval gate
     B->>V: Inbox → Notes, maps regenerated, git commit
     B-->>P: Approved path
@@ -277,7 +282,7 @@ flowchart LR
         model["Hermes / Claude / Codex model"]
     end
     subgraph human["Human-only"]
-        cmd["/brain-approve command"]
+        cmd["/brain_approve command"]
         obs["Obsidian status edit"]
         clia["brain approve (CLI)"]
     end

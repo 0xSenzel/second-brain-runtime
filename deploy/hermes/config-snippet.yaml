@@ -19,7 +19,7 @@ mcp_servers:
     timeout: 120
     tools:
       # Out-of-band approval: hide brain_approve from the model. The user approves with
-      # the /brain-approve command from deploy/hermes/approval-plugin, which calls the
+      # the /brain_approve command from deploy/hermes/approval-plugin, which calls the
       # server through the `second-brain-approver` entry below.
       # If you do NOT install the plugin, delete this `tools:` block so the model can
       # call brain_approve with user_approved + content_sha after explicit approval.
@@ -59,3 +59,11 @@ mcp_servers:
       OLLAMA_URL: http://ollama:11434
       SECOND_BRAIN_EMBED_MODEL: bge-m3
       SECOND_BRAIN_CAPTURE_CACHE: ""
+
+# Telegram menu: core commands alone fill the 60-slot menu, so pin the approval commands.
+# Telegram allows no hyphens; Hermes maps /brain_review back to the plugin's brain-review.
+platforms:
+  telegram:
+    extra:
+      command_menu:
+        priority: [brain_inbox, brain_review, brain_approve, brain_discard]

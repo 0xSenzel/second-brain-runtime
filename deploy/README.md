@@ -14,7 +14,7 @@ Shell variables: `DEP=~/.hermes/deployment`, `VAULT=~/Documents/second-brain`,
 | `hermes/config-snippet.yaml` | Hermes `mcp_servers` (HTTP, approver entry, stdio fallback) |
 | `hermes/skills/` | Four rewritten skills |
 | `hermes/cron-jobs.json` | Two cron jobs in the exact `jobs.json` record schema |
-| `hermes/approval-plugin/` | `/brain-review`, `/brain-approve`, `/brain-discard` |
+| `hermes/approval-plugin/` | `/brain_review`, `/brain_approve`, `/brain_discard` |
 | `hermes/runtime-patch/` | Schema 4 port of the Hermes image's durable-video plugin and retention worker (see its README) |
 | `clients/` | Proposed Claude Code and Codex entries |
 
@@ -211,13 +211,13 @@ Round trip on a test note, from Telegram:
 1. Send Hermes: "Save a test note titled 'zz deploy test' with the summary 'Test only.' and
    one registered tag". Expect a reply naming the title and saying it is in the Inbox.
 2. `docker exec second-brain brain inbox` shows the item. `ls $VAULT/Inbox` shows the file.
-3. Send "review inbox". Expect the item listed. With the plugin: `/brain-review <note_id>`,
-   then `/brain-approve <note_id> <sha8>`. Without it: reply "approve it" in chat.
+3. Send "review inbox". Expect the item listed. With the plugin: `/brain_review <note_id>`,
+   then `/brain_approve <note_id> <sha8>`. Without it: reply "approve it" in chat.
 4. Check `$VAULT/Notes/zz deploy test.md` exists and `Inbox/` no longer has it.
-5. Discard test: capture a second test note, then `/brain-discard <note_id>` (or tell Hermes).
+5. Discard test: capture a second test note, then `/brain_discard <note_id>` (or tell Hermes).
    The file appears under `Archive/Inbox/` with a receipt in `Archive/Receipts/`.
-6. Edit race: capture, `/brain-review`, edit the note in Obsidian, run the old
-   `/brain-approve`. Expect a refusal.
+6. Edit race: capture, `/brain_review`, edit the note in Obsidian, run the old
+   `/brain_approve`. Expect a refusal.
 7. Obsidian path: set `status: approved` on a third test note. It moves to `Notes/` after the
    next read tool call or `docker exec second-brain brain promote`.
 8. Digest: `docker exec hermes hermes cron run <digest-job-id>` (check `hermes cron --help`).

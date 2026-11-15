@@ -18,7 +18,8 @@ the vault.
 3. Review the inbox in one of three ways:
    - In chat: the agent shows the summary and body verbatim. You approve, and the agent
      calls `brain_approve`.
-   - In Telegram with Hermes: send `/brain-approve <note_id> <sha8>`.
+   - In Telegram with Hermes: send `/brain_review`, read the note, then send `/brain_approve`.
+     It approves exactly the version the review showed.
    - In Obsidian: open `Views/Review.base`, set `status: approved` on the note, and the
      next read tool call (or `brain promote`) moves it to `Notes/`.
 4. Ask questions with `brain_ask`, list matches with `brain_find`, and read an exact note
