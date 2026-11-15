@@ -147,16 +147,34 @@ docker cp hermes:/opt/data/config.yaml /tmp/config.live.yaml
    `deploy/hermes/config-snippet.yaml`; add `second-brain-approver` and the `plugins` block.
    Skip the approver, the plugin and `tools.exclude` if you want the model to approve in chat.
 2. Validate: `docker cp /tmp/config.live.yaml hermes:/tmp/c.yaml && docker exec hermes /opt/hermes/.venv/bin/python -c "import yaml;yaml.safe_load(open('/tmp/c.yaml'))"`
-3. Install: `docker cp /tmp/config.live.yaml hermes:/opt/data/config.yaml`.
-4. Skills. Confirm the live skills directory first: `docker exec hermes ls /opt/data/skills`.
-   Then copy each of the four skill folders from `deploy/hermes/skills/<category>/<name>` over
-   `/opt/data/skills/<category>/<name>`. Delete the obsolete
-   `note-taking/second-brain-knowledge-capture/references/commit-and-index-repair.md`.
-5. Plugin (optional): `docker cp deploy/hermes/approval-plugin hermes:/opt/data/plugins/second-brain-approval`,
-   then `docker exec hermes hermes plugins enable second-brain-approval`.
-6. Compose override for Hermes: add `SECOND_BRAIN_HTTP_TOKEN: ${SECOND_BRAIN_HTTP_TOKEN}`
-   to `hermes.environment` and put the token in `$DEP/.env` (the file Compose already reads for
-   `OPENROUTER_API_KEY`). Add the read-only `/vault` override from `compose.second-brain.yaml`.
+3. Install the config, skills, plugin, and token through a helper container, so every file
+   stays owned by `hermes` (`docker cp` can leave files owned by root, which the gateway
+   cannot read). Stage the files in `$STAGE` first: `config.yaml`, `skills/` from
+   `deploy/hermes/skills`, `plugin/` from `deploy/hermes/approval-plugin`, and a copy of
+   `$DEP/second-brain.env`:
+
+   ```bash
+   docker run --rm --user root --entrypoint sh -v hermes-data:/d -v $STAGE:/stage:ro \
+     hermes-local:durable-video-20261115.1 -c '
+   install -o hermes -g hermes -m 640 /stage/config.yaml /d/config.yaml
+   grep -q "^SECOND_BRAIN_HTTP_TOKEN=" /d/.env || grep "^SECOND_BRAIN_HTTP_TOKEN=" /stage/second-brain.env >> /d/.env
+   for s in media/social-video-content media/youtube-content note-taking/second-brain-knowledge-capture personal/short-video-capture; do
+     cp -R /stage/skills/$s/. /d/skills/$s/; chown -R hermes:hermes /d/skills/$s; done
+   cp -R /stage/plugin /d/plugins/second-brain-approval; chown -R hermes:hermes /d/plugins/second-brain-approval'
+   rm -rf $STAGE
+   ```
+
+   The token goes in the profile `.env` (`/opt/data/.env`), which Hermes reads to resolve
+   `${SECOND_BRAIN_HTTP_TOKEN}` in `config.yaml`. Compose needs no token for Hermes.
+4. Remove schema 3 references from the four skills. They describe `brain_prepare_save` and
+   `Reviews/Pending`: `second-brain-knowledge-capture/references/{commit-and-index-repair,
+   inline-review-retrieval,scratch-source-lifecycle}.md` and
+   `short-video-capture/references/proposal-review.md`.
+5. Compose: set `read_only: true` on the hermes `/vault` bind mount. Leave out a
+   `depends_on` on `second-brain`, so Telegram stays up when the writer is down.
+6. Writer host names: the writer must list `second-brain:8765` in
+   `SECOND_BRAIN_ALLOWED_HOSTS` (runtime v4.0.1 or later). Otherwise the MCP library answers
+   Hermes with `421 Invalid Host header`.
 7. Cron. `jobs.json` is owned by the running gateway; do not hand-edit it. Create the jobs with
    the CLI and the prompts from `deploy/hermes/cron-jobs.json`:
    `docker exec hermes hermes cron create --help`, then
