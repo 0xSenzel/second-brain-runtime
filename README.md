@@ -150,6 +150,14 @@ Clients connect to `http://127.0.0.1:18765/mcp` and send `Authorization: Bearer 
 Replace TOKEN with a long random string. The server warns when it listens on a non-loopback
 host without a token.
 
+Relay mode, for stdio clients such as Claude Code and Codex. The relay forwards MCP
+messages to the writer and reads the token from a file, so no client config holds a secret.
+It never opens the vault:
+
+```sh
+second-brain-mcp --connect http://127.0.0.1:18765/mcp --token-file ~/.hermes/deployment/second-brain.env
+```
+
 Reader mode, for a second client that must not write:
 
 ```sh

@@ -226,8 +226,12 @@ Round trip on a test note, from Telegram:
 10. Remove the test notes through `brain_prepare_delete` or Obsidian, then resume Obsidian Sync
     and check the phone.
 
-Mac clients: merge the entries from `clients/` into the real configs yourself **[LIVE]**, export
-`SECOND_BRAIN_HTTP_TOKEN`, restart the clients, and call `brain_find`.
+Mac clients **[LIVE]**: replace the `second-brain` entry in `~/.claude.json` (with
+`claude mcp remove` and `claude mcp add-json -s user`) and in `~/.codex/config.toml` with the
+relay entries in `clients/`, and update `~/.agent-registry/mcp/second-brain.json` the same way
+in a registry maintenance transaction. The relay reads the token file, so no environment
+variable is needed. Check with `claude mcp get second-brain` (Connected) and
+`agent-sync doctor` (both tools `match`).
 
 ## Known gaps to settle before step 4
 
