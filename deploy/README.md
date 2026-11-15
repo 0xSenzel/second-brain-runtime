@@ -109,6 +109,10 @@ git -C $VAULT log --oneline -3          # one migration commit on top of the sna
 cat $VAULT/.brain-schema.json           # schema_version 4
 ```
 
+After the migration, copy `deploy/vault/AGENTS.md` over `$VAULT/AGENTS.md` and `$VAULT/CLAUDE.md`. The file
+replaces both. The live `CLAUDE.md` does not point at `AGENTS.md`: it is a separate, shorter copy of the same
+schema 3 rules. Commit the change in the vault.
+
 If the container user cannot write the bind mount (permission denied), stop and report it.
 Do not run it as root without deciding that first.
 

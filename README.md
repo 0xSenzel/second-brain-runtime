@@ -1,126 +1,163 @@
 # Local Second Brain
 
-A review-first knowledge layer for an Obsidian vault. Codex and Claude can capture
-material, find and read approved notes, optionally use local embeddings when lexical search
-is sparse, and return bounded cited context without loading the whole vault.
+A capture-first knowledge layer for an Obsidian vault. Codex, Claude, and Hermes capture
+material into an `Inbox/` folder, and you approve what stays. Approved notes feed
+hybrid search (keyword plus local embeddings) that returns bounded, cited context without
+loading the whole vault.
+
+The Markdown vault is the source of truth. The SQLite index and vectors are disposable.
+Exactly one process, the writer, changes vault files, and every write is a git commit in
+the vault.
 
 ## Everyday flow
 
-1. Paste text, a webpage, YouTube link, PDF, Markdown file, prompt, or `SKILL.md` into Codex or Claude.
-2. Say **"Save this to my brain."**
-3. The agent stages a proposal and shows its title, full summary and body, destination, type, domain, tags, aliases, maps, and suggested connections.
-4. Approve or reject it. Only approval creates an approved distilled note and an unchanged raw-source note.
-5. Use `brain_find` for matching items, then `brain_read` for an exact note body; use `brain_ask` for a broad question and its bounded evidence pack.
-6. Open the Obsidian vault when you want to browse maps, backlinks, properties, or the graph visually.
+1. Paste text, a webpage, a YouTube link, a PDF, a prompt, or a `SKILL.md` into your agent
+   and say **"Save this to my brain."**
+2. The agent calls `brain_capture`. The note lands in `Inbox/` at once, labeled
+   `status: inbox`. It is searchable but ranks below approved notes.
+3. Review the inbox in one of three ways:
+   - In chat: the agent shows the summary and body verbatim. You approve, and the agent
+     calls `brain_approve`.
+   - In Telegram with Hermes: send `/brain-approve <note_id> <sha8>`.
+   - In Obsidian: open `Views/Review.base`, set `status: approved` on the note, and the
+     next read tool call (or `brain promote`) moves it to `Notes/`.
+4. Ask questions with `brain_ask`, list matches with `brain_find`, and read an exact note
+   with `brain_read`.
 
-Normal questions are read-only. Pending/rejected proposals, Maps, and raw Sources are excluded
-from normal retrieval; source URLs remain available as provenance on the approved note.
+Normal questions never change a file. Raw sources and maps are excluded from retrieval.
 
-## Save a reusable note
+## Vault layout
 
-Pass concise prose in `summary` for search and map listings. Pass the complete reusable
-Markdown in `body`: methods, examples, limits, evidence pointers, or exact prompts.
-Keep the raw transcript, captions, and visual extraction in `content_or_url`; these
-remain in the linked source note. Review the full summary and body before approving.
+| Path | Contents |
+|---|---|
+| `Inbox/` | Unreviewed notes (`status: inbox`) |
+| `Notes/` | Approved notes, flat (`status: approved`) |
+| `Sources/` | Raw captured material, flat, `<source-id>-<title>.md`. Untrusted. |
+| `Maps/` | Generated maps and `Tag Registry.md` |
+| `Archive/` | Discarded and deleted notes, with a JSON receipt per action in `Archive/Receipts/` |
+| `Views/` | Obsidian Bases files, such as `Review.base` |
+| `Templates/` | Note templates |
+| `.brain-schema.json` | Schema stamp (`schema_version: 4`) |
+| `.second-brain/` | Gitignored runtime state: index and write lock |
 
-Use `brain prepare INPUT --body-file NOTE.md` to supply the body from a file.
-When revising a note, omit `body` to preserve its existing Details section, or supply
-its complete replacement. An empty string proposes removing that section.
-Older pending proposals load with an empty body. This additive field uses the existing
-proposal deserialization defaults and Markdown storage; it requires no vault migration.
+Folders express lifecycle. Type and domain live in frontmatter, and subject matter lives in
+tags.
 
-## Where a note goes
+## Note frontmatter
 
-A note's path is `<Domain>/<Type>/`, decided by two closed sets and nothing else:
+```yaml
+id: note-<12 hex>        # stable across revisions
+status: inbox | approved
+type: concept | prompt | skill | project | essay
+domain: personal | tech
+title: <title>
+created: <ISO UTC>
+updated: <ISO UTC>
+reviewed: <ISO UTC>      # set on approval
+tags: [kebab-case]       # 1 to 5, registered
+aliases: [...]           # optional
+sources: ["[[<source stem>]]"]
+source_url: <URL>        # optional, with source_kind and source_creator
+revises: note-<id>       # inbox only: proposes a revision of that note
+```
 
-| Domain      | For                                                          |
-|-------------|--------------------------------------------------------------|
-| `Personal/` | Health, training, self-reflection, style.                     |
-| `Tech/`     | Tooling, code, prompts about building, technical reference.   |
+A note body has `Summary`, optional `Details`, `Connections`, and `Source` sections.
 
-| Type      | Folder      | For                                                |
-|-----------|-------------|----------------------------------------------------|
-| `concept` | `Notes/`    | Everything distilled that is not one of the below.  |
-| `prompt`  | `Prompts/`  | Reusable prompts.                                   |
-| `skill`   | `Skills/`   | Agent skills.                                       |
-| `project` | `Projects/` | Material scoped to one active piece of work.        |
-| `essay`   | `Essays/`   | Your own writing, not captured from someone else.   |
+## Approval gate
 
-Shared across both domains: `Maps/` (index notes, headed by job to be done — the browsing
-layer), `Sources/` (raw captures, flat, `<id>-<title>.md`), and `Reviews/`.
+`approve` refuses a note when any of these fail, and leaves the file unchanged:
 
-**Subject matter never becomes a folder.** A note about frontend design is a `concept`
-tagged `frontend`, not a Frontend folder. Topic lives in tags, which are many-to-many, so
-material that belongs in several places is not forced to pick one parent. Both axes are
-closed sets; adding a domain or type is a deliberate edit to `models.py`, never something a
-save decides on its own.
+- The summary is empty, contains Markdown headings, or exceeds 1500 characters.
+- The note has fewer than 1 or more than 5 tags.
+- A tag is malformed or missing from `Maps/Tag Registry.md`.
+- The type or domain is invalid.
+- `revises` names a note that doesn't exist.
 
-Type folders stay flat. Retrieval runs on search, tags, maps, and links, none of which care
-about folder depth. Split one only when a single tag passes roughly 30 notes.
+Aliases and maps aren't required. `brain_capture` reports these problems as `problems`
+without blocking the capture.
 
-## Structure is enforced, not requested
+Approval binds to `content_sha`, the SHA-256 digest of the inbox file. If the note changes
+after review, the approval fails with a mismatch. A `revises` note rewrites the target in
+place and keeps its `id`, `created`, and every earlier source. `brain_approve` needs
+`user_approved=true` in `chat` approval mode and is refused in `human` mode.
 
-Prose guidance is advice an agent drops under context pressure, so the rules live in code.
-`commit_save` refuses a proposal that lacks:
+## MCP tools
 
-- a **summary** — prose only, no Markdown headings, under 1500 characters;
-- at least **2 tags**, all registered in the vault's `Maps/Tag Registry.md`;
-- at least **2 aliases**, covering other phrasings someone would search for later;
-- at least **1 map**, since a note on no map cannot be found by browsing.
+| Read | Write |
+|---|---|
+| `brain_find`, `brain_ask`, `brain_read`, `brain_neighbors`, `brain_open`, `brain_list_tags`, `brain_inbox`, `brain_digest`, `brain_report`, `brain_validate` | `brain_capture`, `brain_update_inbox`, `brain_approve`, `brain_discard`, `brain_register_tags`, `brain_prepare_delete`, `brain_commit_delete` |
 
-`brain_prepare_save` reports the same failures as `blocking_problems` before approval, so
-they are fixed while it still costs nothing. Re-preparing the same capture retires the
-earlier attempt, so a retry does not strand a dead proposal in the queue. Notes edited by
-hand bypass all of this — `brain validate` applies the same rules to the whole vault.
+In `reader` mode, write tools return an error and never touch the vault. Deleting an
+approved note takes two steps: `brain_prepare_delete` stages a review, and
+`brain_commit_delete` archives the note after you approve that proposal ID. Nothing is
+erased permanently. The server sends the usage rules to clients as MCP instructions.
 
-## Schema version
+## CLI
 
-The code and the notes live in separate repositories, so they can move independently and
-nothing else records that they belong together. `models.SCHEMA_VERSION` is the layout this
-code produces, and it is stamped into the vault as `.brain-schema.json`:
+```sh
+brain [--vault PATH] COMMAND
+```
 
-| Version | Layout |
-|---------|--------|
-| 1 | Flat `Prompts/ Skills/ Knowledge/ Resources/ Projects/`, routed by a single `kind`. |
-| 2 | `<Domain>/<Type>/`, closed sets, structure enforced at commit. |
-| 3 | Same folders as 2. The stamp gained axis validation and lost its timestamp, and runtimes older than this reorganise a vault before checking the stamp, so they are fenced out. |
+| Command | Use |
+|---|---|
+| `capture INPUT` | Write an unreviewed note. Options: `--type`, `--domain`, `--title`, `--summary`, `--body-file`, `--tag`, `--alias`, `--creator`, `--source-url`, `--source-kind`, `--revises`, `--connections` |
+| `inbox [NOTE_ID]` | List inbox items, or show one in full |
+| `approve NOTE_ID [--sha SHA]` | Approve one inbox note as a human |
+| `discard NOTE_ID [--reason TEXT]` | Archive an inbox note |
+| `promote` | Promote notes approved by editing `status` in Obsidian |
+| `digest [--json]` | Short inbox digest |
+| `report [--stale-days N]` | Duplicates, orphans, stale inbox items. Changes nothing. |
+| `find QUERY [--limit N]` | Find matching notes |
+| `ask QUERY [--max-tokens N] [--hops N]` | Retrieve an evidence bundle |
+| `reindex` | Refresh the lexical index |
+| `embed` | Embed chunks that have no vector |
+| `validate` | Check notes against the structural rules |
+| `doctor` | Check the runtime, schema stamp, Ollama, and embedding coverage |
+| `register-tags TAG...` | Add tags to the registry |
+| `migrate-v4` | Migrate a schema 3 vault |
 
-The stamp is tracked rather than kept under the gitignored `.second-brain/` index, so it
-travels with a clone. On startup the runtime compares the two:
+## Configuration
 
-- **Match** — everything proceeds. The stamp is rewritten only when its content would
-  actually change, so opening the vault never dirties the notes repository.
-- **Vault newer** — it was written by a runtime you have not pulled yet.
-- **Vault older** — it needs migrating to the layout this code produces.
+| Variable | Default | Use |
+|---|---|---|
+| `SECOND_BRAIN_VAULT` | `~/Documents/second-brain` | Vault path. The `--vault` option overrides it. |
+| `SECOND_BRAIN_MODE` | `writer` | `writer` or `reader` |
+| `SECOND_BRAIN_APPROVAL` | `chat` | `chat` or `human` |
+| `SECOND_BRAIN_INDEX_PATH` | `<vault>/.second-brain/index.sqlite3` | Index location. Set it for every reader. |
+| `SECOND_BRAIN_HTTP_TOKEN` | unset | Bearer token required on every HTTP request when set |
+| `SECOND_BRAIN_GIT_AUTOCOMMIT` | `1` | `0` turns off the git commit per write |
+| `OLLAMA_URL` | `http://localhost:11434` | Embedding server |
+| `SECOND_BRAIN_EMBED_MODEL` | `bge-m3` | Embedding model |
+| `SECOND_BRAIN_CAPTURE_CACHE` | unset | Scratch directory. After approve or discard, files named for the post ID in `source_url` are deleted. |
+| `SECOND_BRAIN_DISABLE_SQLITE_VEC` | unset | `1`, `true`, or `yes` stores vectors as JSON instead of in `sqlite-vec` |
 
-A mismatch blocks writes and leaves reads working, because retrieving from a vault whose
-layout has moved is harmless, while writing into it puts notes where neither version will
-look for them. Nothing is created, moved, or removed either — opening a vault this code does
-not understand leaves it exactly as it was. `brain doctor` and `brain validate` report it.
+## Run the server
 
-Bump `SCHEMA_VERSION` when a change would leave existing notes in the wrong place, and ship
-the vault migration in the same breath. Also bump when an older runtime must be stopped from
-writing to a vault this version has touched, as with 2 to 3 — that upgrade moves no notes,
-so migrating a v2 vault means deleting `.brain-schema.json` and letting it be re-stamped.
+Stdio, for a local client:
 
-## Agent tools
+```sh
+second-brain-mcp
+```
 
-The MCP server exposes:
+Streamable HTTP, with a token:
 
-- `brain_prepare_save` — stage a review proposal
-- `brain_commit_save` — save only after explicit approval
-- `brain_reject_save` and `brain_pending` — manage the review queue
-- `brain_register_tags` — extend the controlled vocabulary
-- `brain_validate` — check every note against the structural rules, including the schema stamp
-- `brain_find` — compact matching items with stable IDs, short snippets, and provenance
-- `brain_read` — exact approved note body or one bounded section by stable ID
-- `brain_ask` — up to four cited evidence notes in a 4,000-token context budget
-- `brain_neighbors` — typed graph links and backlinks
-- `brain_open` — an Obsidian link for a result
+```sh
+SECOND_BRAIN_HTTP_TOKEN=TOKEN second-brain-mcp --transport streamable-http --host 127.0.0.1 --port 8765
+```
 
-The rules above travel with these tools as MCP server instructions, so a client running
-outside the vault directory still gets them. The server is registered for both Codex and
-Claude; restart those apps after changing the code so they pick it up.
+Clients connect to `http://127.0.0.1:8765/mcp` and send `Authorization: Bearer TOKEN`.
+Replace TOKEN with a long random string. The server warns when it listens on a non-loopback
+host without a token.
+
+Reader mode, for a second client that must not write:
+
+```sh
+SECOND_BRAIN_MODE=reader SECOND_BRAIN_INDEX_PATH=/path/to/reader-index.sqlite3 second-brain-mcp
+```
+
+The writer starts a background worker that embeds new chunks, and it runs `promote` at
+startup. Search uses keyword ranking alone when Ollama is stopped, and fuses it with vector
+ranking when embeddings are available.
 
 ## Installed locations
 
@@ -128,6 +165,7 @@ Claude; restart those apps after changing the code so they pick it up.
 - Vault: `/Users/senzel/Documents/second-brain`
 - Embeddings: Ollama with `bge-m3`, stored locally
 - Search index: `<vault>/.second-brain/index.sqlite3`
+- Deployment: the `second-brain` container, staged in [deploy/README.md](deploy/README.md)
 
 ## Local maintenance
 
@@ -138,31 +176,40 @@ uv run pytest
 uv run brain --vault /Users/senzel/Documents/second-brain doctor
 uv run brain --vault /Users/senzel/Documents/second-brain validate
 uv run brain --vault /Users/senzel/Documents/second-brain reindex
-uv run brain --vault /Users/senzel/Documents/second-brain pending
+uv run brain --vault /Users/senzel/Documents/second-brain embed
+uv run brain --vault /Users/senzel/Documents/second-brain inbox
+uv run brain --vault /Users/senzel/Documents/second-brain digest
+uv run brain --vault /Users/senzel/Documents/second-brain report
 ```
 
-Keyword and graph search continue working if Ollama is stopped. Restart Ollama for
-semantic search.
+## Migrate from schema 3
 
-## Design choices
+`brain migrate-v4` converts a schema 3 vault. Apply refuses to run unless all of these hold:
 
-The Markdown vault is the durable source of truth; SQLite and vectors are disposable local
-indexes. Every approved capture stores both the original material and a distilled note.
-Typed Markdown links make useful relationships explicit, while bounded retrieval avoids
-sending an entire private vault to an AI provider.
+- The vault is a git repository.
+- The working tree is clean.
+- `.brain-schema.json` says `3`.
 
-Lexical search is the normal path. `brain_find` stays lexical; `brain_ask` tries local
-semantic search only when lexical search returns no results, and falls back cleanly if
-Ollama fails. Foreground retrieval updates the lexical index without embedding work.
-Reindexing checks canonical note paths and file metadata on each request, but reads and
-rebuilds only changed notes; Markdown remains the source of truth. `brain_find` does not
-expand graph links by default. `brain_ask` returns at most four notes and 4,000 tokens, and
-graph expansion is opt-in. Raw sources and Maps are not in normal retrieval, so a raw
-capture or a map listing cannot crowd out approved notes.
+1. Write a tag map, `{"old-tag": "new-tag", "unwanted-tag": null}`, and a map-tags file,
+   `{"Map name": ["tag", ...]}`. Keep both outside the vault.
+2. Run the dry run, which is the default and prints the plan as JSON:
 
-The implementation was informed by existing Obsidian/RAG projects, but is purpose-built
-around the stricter proposal-before-write boundary and shared Codex/Claude MCP interface.
-No third-party project source code was copied.
+   ```sh
+   brain --vault VAULT migrate-v4 --dry-run --tag-map tag-map.json --map-tags map-tags.json
+   ```
 
-See [docs/RESEARCH.md](docs/RESEARCH.md) for the evaluated local alternatives and
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full flow and privacy boundary.
+3. Resolve title clashes and unmapped maps in the plan, then apply:
+
+   ```sh
+   brain --vault VAULT migrate-v4 --apply --tag-map tag-map.json --map-tags map-tags.json
+   ```
+
+The migration makes one git commit. The full deployment sequence, including the snapshot
+tag and rollback, is in [deploy/README.md](deploy/README.md).
+
+## More documentation
+
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): flow, components, and privacy boundary.
+- [deploy/README.md](deploy/README.md): schema 4 deployment runbook.
+- [docs/RETRIEVAL_EVALUATION.md](docs/RETRIEVAL_EVALUATION.md): retrieval method and results.
+- [docs/RESEARCH.md](docs/RESEARCH.md): evaluated local alternatives.
