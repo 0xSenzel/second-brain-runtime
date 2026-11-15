@@ -997,6 +997,11 @@ def apply(migration: MigrationPlan) -> dict[str, Any]:
         created = sorted({dst for _, dst in ops.moves} | set(ops.writes))
         for start in range(0, len(created), 200):
             _git(root, "clean", "-fd", "--", *created[start : start + 200])
+        parents = {parent for rel in created for parent in Path(rel).parents if parent != Path(".")}
+        for parent in sorted(parents, key=lambda path: len(path.parts), reverse=True):
+            folder = root / parent
+            if folder.is_dir() and not any(folder.iterdir()):
+                folder.rmdir()
         raise
     new_head = _git(root, "rev-parse", "HEAD").stdout.strip()
     return {
