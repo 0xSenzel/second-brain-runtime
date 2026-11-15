@@ -467,7 +467,9 @@ class _Planner:
             target = _link_target(self.sources[stem]["fm"].get("distilled_note"))
             owners = names.get(target, [])
             if not owners:
-                if target:
+                if not target:
+                    self.warn(f"Source {stem} names no note (no distilled_note); left as is.")
+                else:
                     self.warn(f"Source {stem} names {target!r}, which is not a note; left as is.")
                 continue
             if len({note.fm["id"] for note in owners}) > 1:
@@ -509,6 +511,8 @@ class _Planner:
             over = len(tags) > 5
             dropped_tags = tags[5:] if over else []
             tags = tags[:5]
+            if not tags:
+                self.warn(f"Note {fm['id']} ({note.new_stem}) has no tags after mapping.")
             if over:
                 self.warn(
                     f"Note {fm['id']} ({note.new_stem}) has {len(tags) + len(dropped_tags)} tags "
