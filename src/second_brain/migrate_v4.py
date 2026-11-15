@@ -990,9 +990,13 @@ def apply(migration: MigrationPlan) -> dict[str, Any]:
         if commit.returncode != 0:
             raise MigrationError(f"git commit failed: {commit.stderr.strip() or commit.stdout.strip()}")
     except BaseException:
-        # The tree was clean when apply began, so restoring HEAD removes only our changes.
+        # The tree was clean when apply began, so restoring HEAD undoes our edits. Untracked
+        # files are removed only at paths this migration created: Obsidian Sync or an editor
+        # may have written elsewhere in the vault meanwhile, and that work is not ours to drop.
         _git(root, "reset", "--hard", "HEAD")
-        _git(root, "clean", "-fd")
+        created = sorted({dst for _, dst in ops.moves} | set(ops.writes))
+        for start in range(0, len(created), 200):
+            _git(root, "clean", "-fd", "--", *created[start : start + 200])
         raise
     new_head = _git(root, "rev-parse", "HEAD").stdout.strip()
     return {
