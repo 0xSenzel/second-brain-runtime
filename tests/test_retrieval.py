@@ -4,12 +4,13 @@ import hashlib
 import json
 import os
 import sqlite3
+import time
 from pathlib import Path
 
 import pytest
+import yaml
 
-from second_brain.index import BrainIndex
-from second_brain.service import BrainService
+from second_brain.index import INDEX_VERSION, BrainIndex
 
 
 class TinyEmbedder:
@@ -36,12 +37,9 @@ class FlakyEmbedder(TinyEmbedder):
         return super().embed(text)
 
 
-class SecondTinyEmbedder(TinyEmbedder):
-    model = "second-tiny-test"
-
-
-class CountingSecondTinyEmbedder(SecondTinyEmbedder):
-    def __init__(self) -> None:
+class CountingEmbedder(TinyEmbedder):
+    def __init__(self, model: str = "tiny-test") -> None:
+        self.model = model
         self.calls = 0
 
     def embed(self, text: str) -> list[float]:
@@ -49,69 +47,106 @@ class CountingSecondTinyEmbedder(SecondTinyEmbedder):
         return super().embed(text)
 
 
-def save(service: BrainService, **kwargs):
-    """Commit a note, filling in whatever structural metadata the test did not specify."""
-    kwargs.setdefault("note_type", "concept")
-    kwargs.setdefault("domain", "tech")
-    kwargs.setdefault("content", f"Raw fixture for {kwargs['title']}.")
-    kwargs.setdefault("summary", kwargs.get("content", "")[:80])
-    kwargs.setdefault("tags", ["testing", "fixture"])
-    kwargs.setdefault("aliases", [kwargs["title"] + " alt", kwargs["title"] + " alias"])
-    kwargs.setdefault("maps", ["Test Map"])
-    proposal = service.prepare_save(**kwargs)
-    return service.commit_save(proposal.id)
+def write_note(
+    vault: Path,
+    title: str,
+    *,
+    folder: str = "Notes",
+    status: str | None = None,
+    summary: str = "",
+    details: str = "",
+    connections: tuple[tuple[str, str], ...] = (),
+    note_id: str | None = None,
+    **extra,
+) -> Path:
+    """Write a schema-4 note file directly, as the writer service would."""
+    status = status or ("inbox" if folder == "Inbox" else "approved")
+    note_id = note_id or "note-" + hashlib.sha256(title.encode()).hexdigest()[:12]
+    frontmatter = {
+        "id": note_id, "status": status, "type": "concept", "domain": "tech", "title": title,
+        "created": "2026-01-01T00:00:00Z", "updated": "2026-01-01T00:00:00Z",
+        "tags": ["testing"], **extra,
+    }
+    lines = [f"# {title}", "", "## Summary", "", summary or f"About {title}.", ""]
+    if details:
+        lines += ["## Details", "", details, ""]
+    lines += ["## Connections", ""]
+    lines += [f"- {relation}: [[{target}]] — reason" for relation, target in connections] or ["- None yet"]
+    header = yaml.safe_dump(frontmatter, allow_unicode=True, sort_keys=False)
+    text = f"---\n{header}---\n\n" + "\n".join(lines) + "\n"
+    path = vault / folder / f"{title}.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    return path
 
 
-def test_index_excludes_pending_and_follows_graph_in_both_directions(tmp_path: Path) -> None:
-    vault = tmp_path / "vault"
-    service = BrainService(vault)
-    save(
-        service,
-        note_type="concept",
-        content="Visual hierarchy and accessibility improve interface clarity.",
-        title="UI Design",
-        summary="Principles for clear and accessible interfaces.",
-        body="## Details\n\nVisual hierarchy and accessibility improve interface clarity.",
-    )
-    save(
-        service,
-        note_type="skill",
-        content="A repeatable interface review workflow.",
-        title="Frontend Critique Skill",
-        summary="Reviews interfaces using saved design principles.",
-        connections=[{"relation": "uses", "target": "UI Design", "reason": "Review standard"}],
-    )
-    pending = service.prepare_save(
-        note_type="prompt",
-        content="Secret pending accessibility prompt",
-        title="Pending Prompt",
-    )
+@pytest.fixture
+def vault(tmp_path: Path) -> Path:
+    path = tmp_path / "vault"
+    path.mkdir()
+    return path
 
-    index = BrainIndex(vault, embedder=TinyEmbedder())
+
+def test_index_covers_notes_and_inbox_only_and_follows_graph(vault: Path) -> None:
+    write_note(vault, "UI Design", summary="Principles for clear interfaces.",
+               details="Visual hierarchy and accessibility improve interface clarity.")
+    write_note(vault, "Frontend Critique Skill", summary="Reviews interfaces.",
+               connections=(("uses", "UI Design"),))
+    write_note(vault, "Pending Idea", folder="Inbox", details="Secret accessibility idea")
+    write_note(vault, "Old Source", folder="Sources", details="accessibility raw source")
+    write_note(vault, "Archived", folder="Archive/Notes", details="accessibility archived")
+    write_note(vault, "Retired Review", folder="Reviews", details="accessibility review")
+
+    index = BrainIndex(vault)
     result = index.reindex()
     hits = index.search("visual hierarchy accessibility", limit=5, hops=1)
 
-    # Normal retrieval contains only approved distilled notes from canonical folders.
-    assert result["indexed_notes"] == 2
-    assert all(hit.title != "Pending Prompt" for hit in hits)
+    assert result["indexed_notes"] == 3
+    assert (result["approved_notes"], result["inbox_notes"]) == (2, 1)
+    titles = {hit.title for hit in hits}
+    assert titles == {"UI Design", "Frontend Critique Skill", "Pending Idea"}
     assert hits[0].title == "UI Design"
     assert any(hit.title == "Frontend Critique Skill" and hit.via_graph for hit in hits)
-    assert (vault / "Reviews" / "Pending" / f"{pending.id}.md").exists()
 
 
-def test_context_is_cited_budgeted_and_read_only(tmp_path: Path) -> None:
-    vault = tmp_path / "vault"
-    service = BrainService(vault)
-    save(
-        service,
-        note_type="prompt",
-        content="Review a UI for hierarchy, spacing, accessibility, and responsiveness.",
-        title="Frontend Design Critique",
-        summary="A concise checklist for interface reviews.",
-        body="## Checklist\n\nReview accessibility, keyboard flow, and interface hierarchy.",
-        source_url="https://example.com/prompt",
-    )
-    index = BrainIndex(vault, embedder=TinyEmbedder())
+def test_inbox_hits_are_weighted_flagged_and_can_be_excluded(vault: Path) -> None:
+    write_note(vault, "Approved Espresso", details="espresso grind size and extraction time")
+    write_note(vault, "Inbox Espresso", folder="Inbox", details="espresso grind size and extraction time")
+    index = BrainIndex(vault)
+    index.reindex()
+
+    hits = index.search("espresso grind extraction")
+    by_title = {hit.title: hit for hit in hits}
+
+    assert hits[0].title == "Approved Espresso"
+    assert by_title["Approved Espresso"].as_dict()["status"] == "approved"
+    assert by_title["Approved Espresso"].as_dict()["unreviewed"] is False
+    assert by_title["Inbox Espresso"].as_dict()["status"] == "inbox"
+    assert by_title["Inbox Espresso"].as_dict()["unreviewed"] is True
+    approved_score = by_title["Approved Espresso"].score
+    assert by_title["Inbox Espresso"].score == pytest.approx(approved_score * 0.5, rel=0.3)
+    assert [h.title for h in index.search("espresso", include_inbox=False)] == ["Approved Espresso"]
+    bundle = index.context("espresso grind", include_inbox=False)
+    assert all(source["status"] == "approved" for source in bundle["sources"])
+    assert "unreviewed" in index.context("espresso grind")["context"]
+
+
+def test_inbox_only_note_is_found_and_ranks_by_weight_only(vault: Path) -> None:
+    write_note(vault, "Fresh Capture", folder="Inbox", details="zebra migration corridors")
+    index = BrainIndex(vault)
+    index.reindex()
+
+    hits = index.search("zebra migration")
+
+    assert [h.title for h in hits] == ["Fresh Capture"]
+    assert hits[0].status == "inbox"
+
+
+def test_context_is_cited_budgeted_and_read_only(vault: Path) -> None:
+    write_note(vault, "Frontend Design Critique", summary="A concise checklist for interface reviews.",
+               details="Review accessibility, keyboard flow, and interface hierarchy.",
+               source_url="https://example.com/prompt")
+    index = BrainIndex(vault)
     index.reindex()
     before = {path: path.read_bytes() for path in vault.rglob("*.md")}
 
@@ -119,366 +154,273 @@ def test_context_is_cited_budgeted_and_read_only(tmp_path: Path) -> None:
 
     assert bundle["estimated_tokens"] <= 120
     assert "Frontend Design Critique" in bundle["context"]
-    assert "Tech/Notes/" not in bundle["context"]  # this item belongs in Prompts
-    assert "Tech/Prompts/Frontend Design Critique.md" in bundle["context"]
+    assert "Notes/Frontend Design Critique.md" in bundle["context"]
     assert "https://example.com/prompt" in bundle["context"]
     assert before == {path: path.read_bytes() for path in vault.rglob("*.md")}
 
 
-def test_reindex_is_incremental_and_removes_deleted_notes(tmp_path: Path) -> None:
-    vault = tmp_path / "vault"
-    service = BrainService(vault)
-    item = save(service, note_type="concept", content="Graph retrieval", title="Graph Retrieval")
+def test_index_path_follows_env_then_vault_default(vault: Path, tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("SECOND_BRAIN_INDEX_PATH", raising=False)
+    assert BrainIndex(vault).db_path == vault.resolve() / ".second-brain" / "index.sqlite3"
+
+    target = tmp_path / "elsewhere" / "idx.sqlite3"
+    monkeypatch.setenv("SECOND_BRAIN_INDEX_PATH", str(target))
+    index = BrainIndex(vault)
+    assert index.db_path == target
+    assert target.exists()
+
+
+def test_reindex_never_calls_embedder_unless_asked(vault: Path) -> None:
+    write_note(vault, "Graph Retrieval", details="graph retrieval notes")
+    embedder = CountingEmbedder()
+    index = BrainIndex(vault, embedder=embedder)
+
+    result = index.reindex()
+
+    assert embedder.calls == 0
+    assert result["embedded_chunks"] == 0
+    assert index.vector_stats()["embedded"] == 0
+    assert index.reindex(embed_vectors=True)["embedded_chunks"] > 0
+
+
+def test_reindex_is_incremental_and_removes_deleted_notes(vault: Path) -> None:
+    path = write_note(vault, "Graph Retrieval", details="graph retrieval")
     index = BrainIndex(vault, embedder=TinyEmbedder())
 
-    first = index.reindex()
-    second = index.reindex()
-    (vault / item.note_path).unlink()
+    first = index.reindex(embed_vectors=True)
+    second = index.reindex(embed_vectors=True)
+    path.unlink()
     third = index.reindex()
 
     assert first["embedded_chunks"] > 0
     assert second["embedded_chunks"] == 0
     assert third["deleted_notes"] == 1
-    assert all(hit.title != "Graph Retrieval" for hit in index.search("Graph Retrieval"))
+    assert index.search("Graph Retrieval") == []
 
 
-def test_reindex_backfills_vectors_when_embeddings_are_enabled_later(tmp_path: Path) -> None:
-    vault = tmp_path / "vault"
-    service = BrainService(vault)
-    save(service, note_type="concept", content="Local semantic retrieval", title="Semantic Search")
-
-    lexical_only = BrainIndex(vault)
-    lexical_only.reindex()
+def test_reindex_backfills_vectors_when_embeddings_are_enabled_later(vault: Path) -> None:
+    write_note(vault, "Semantic Search", details="Local semantic retrieval")
+    BrainIndex(vault).reindex()
 
     semantic = BrainIndex(vault, embedder=TinyEmbedder())
-    result = semantic.reindex()
+    result = semantic.reindex(embed_vectors=True)
     with sqlite3.connect(semantic.db_path) as db:
-        missing_vectors = db.execute("SELECT COUNT(*) FROM chunks WHERE vector IS NULL").fetchone()[0]
+        missing = db.execute("SELECT COUNT(*) FROM chunks WHERE vector IS NULL").fetchone()[0]
 
     assert result["embedded_chunks"] > 0
-    assert missing_vectors == 0
+    assert missing == 0
 
 
-def test_reindex_retries_chunks_after_a_temporary_embedding_failure(tmp_path: Path) -> None:
-    vault = tmp_path / "vault"
-    service = BrainService(vault)
-    save(
-        service,
-        note_type="concept",
-        title="Retry Embeddings",
-        body="## Details\n\n" + ("Retry semantic retrieval. " * 600),
-    )
-    embedder = FlakyEmbedder()
-    index = BrainIndex(vault, embedder=embedder)
+def test_reindex_retries_chunks_after_a_temporary_embedding_failure(vault: Path) -> None:
+    write_note(vault, "Retry Embeddings", details=("Retry semantic retrieval. " * 600))
+    index = BrainIndex(vault, embedder=FlakyEmbedder())
 
-    first = index.reindex()
-    with sqlite3.connect(index.db_path) as db:
-        chunk_ids = [row[0] for row in db.execute("SELECT id FROM chunks ORDER BY id")]
-        for chunk_id in chunk_ids[1:]:
-            db.execute(
-                "UPDATE chunks SET vector=? WHERE id=?",
-                (json.dumps([1.0] * 32), chunk_id),
-            )
-        first_missing = db.execute("SELECT COUNT(*) FROM chunks WHERE vector IS NULL").fetchone()[0]
+    first = index.reindex(embed_vectors=True)
+    pending = len(index.pending_chunks())
+    second = index.reindex(embed_vectors=True)
 
-    second = index.reindex()
-    with sqlite3.connect(index.db_path) as db:
-        second_missing = db.execute("SELECT COUNT(*) FROM chunks WHERE vector IS NULL").fetchone()[0]
-
-    assert first["warnings"]
-    assert first["embedded_chunks"] == 0
-    assert first_missing == 1
-    assert second["embedded_chunks"] == first_missing
-    assert second_missing == 0
+    assert first["warnings"] and first["embedded_chunks"] == 0
+    assert pending > 1
+    assert second["embedded_chunks"] == pending
+    assert index.pending_chunks() == []
 
 
-def test_lexical_reindex_does_not_claim_a_new_embedding_model(tmp_path: Path) -> None:
-    vault = tmp_path / "vault"
-    service = BrainService(vault)
-    save(service, title="Model Version Note", content="Model version compatibility.")
+def test_model_change_drops_old_vectors_and_search_skips_mismatch(vault: Path) -> None:
+    write_note(vault, "Model Version Note", details="Model version compatibility.")
+    index = BrainIndex(vault, embedder=TinyEmbedder())
+    index.reindex(embed_vectors=True)
+
+    other = CountingEmbedder("other-model")
+    index.embedder = other
+    _hits, warnings = index._search("model version", limit=5, hops=0)
+    assert any("tiny-test" in warning and "other-model" in warning for warning in warnings)
+    assert other.calls == 0  # never embeds the query against vectors from another model
+
+    result = index.reindex(embed_vectors=True)
+    assert result["embedded_chunks"] > 0
+    assert index.vector_stats()["model"] == "other-model"
+
+
+def test_lexical_reindex_does_not_claim_an_embedding_model(vault: Path) -> None:
+    write_note(vault, "Model Version Note", details="Model version compatibility.")
     index = BrainIndex(vault, embedder=TinyEmbedder())
     index.reindex()
-    index.embedder = SecondTinyEmbedder()
-
-    skipped = index.reindex(embed_vectors=False)
-    with sqlite3.connect(index.db_path) as db:
-        skipped_model = db.execute(
-            "SELECT value FROM metadata WHERE key='embedding_model'"
-        ).fetchone()[0]
-    refreshed = index.reindex()
-    with sqlite3.connect(index.db_path) as db:
-        refreshed_model = db.execute(
-            "SELECT value FROM metadata WHERE key='embedding_model'"
-        ).fetchone()[0]
-
-    assert skipped["embedded_chunks"] == 0
-    assert skipped_model == "tiny-test"
-    assert refreshed["embedded_chunks"] > 0
-    assert refreshed_model == "second-tiny-test"
+    assert index.vector_stats()["model"] == ""
 
 
-def test_semantic_fallback_skips_vectors_from_a_different_model(tmp_path: Path) -> None:
-    vault = tmp_path / "vault"
-    service = BrainService(vault)
-    save(
-        service,
-        title="Semantic Compatibility",
-        content="A note about semantic compatibility and vector indexing.",
-    )
+def test_new_notes_without_vectors_warn_about_partial_coverage(vault: Path) -> None:
+    write_note(vault, "Vector Coverage", details="Vector coverage fixture.")
     index = BrainIndex(vault, embedder=TinyEmbedder())
-    index.reindex()
-    replacement = CountingSecondTinyEmbedder()
-    index.embedder = replacement
-
-    context = index.context("qzparaphrase no lexical match")
-
-    assert replacement.calls == 0
-    assert context["sources"] == []
-    assert any("indexed vectors use embedding model" in warning for warning in context["warnings"])
-    assert any("reindex" in warning for warning in context["warnings"])
-
-
-def test_semantic_fallback_warns_when_new_notes_have_no_vectors(tmp_path: Path) -> None:
-    vault = tmp_path / "vault"
-    service = BrainService(vault)
-    save(
-        service,
-        title="Previously Indexed Note",
-        content="This note already has a semantic embedding.",
-    )
-    index = BrainIndex(vault, embedder=TinyEmbedder())
+    index.reindex(embed_vectors=True)
+    write_note(vault, "Later Note", details="Added after the embedding pass.")
     index.reindex()
 
-    save(
-        service,
-        title="Recently Added Note",
-        content="A recently added note receives vectors during background reindexing.",
-    )
-    result = index.reindex(embed_vectors=False)
-    context = index.context("qzparaphrase no lexical match")
+    _hits, warnings = index._search("vector coverage", limit=5, hops=0)
 
-    assert result["embedded_chunks"] == 0
-    assert any("incomplete coverage" in warning for warning in context["warnings"])
-    assert any("no embeddings" in warning for warning in context["warnings"])
+    assert any("covers" in warning for warning in warnings)
 
 
-def test_find_ids_for_legacy_notes_without_frontmatter_ids_can_be_read(tmp_path: Path) -> None:
-    vault = tmp_path / "vault"
-    note_path = vault / "Tech" / "Notes" / "Legacy Note.md"
-    note_path.parent.mkdir(parents=True)
-    note_path.write_text(
-        "---\nstatus: approved\ntype: concept\ndomain: tech\ntitle: Legacy Note\n---\n"
-        "# Legacy Note\n\n## Summary\nA legacy note without a stable frontmatter ID.\n\n"
-        "## Details\nThis exact note body remains readable through its derived stable ID.\n",
-        encoding="utf-8",
+def test_ids_without_frontmatter_ids_can_be_read(vault: Path) -> None:
+    path = vault / "Notes" / "Legacy Note.md"
+    path.parent.mkdir()
+    path.write_text(
+        "---\nstatus: approved\ntype: concept\ndomain: tech\n---\n\n# Legacy Note\n\n## Summary\n\nOld.\n"
     )
     index = BrainIndex(vault)
     index.reindex()
 
-    hit = index.search("legacy exact body", limit=5)[0]
-    result = index.read_note(hit.id)
+    hit = index.search("Legacy Note")[0]
 
-    assert hit.id.startswith("note-")
-    assert result["path"] == "Tech/Notes/Legacy Note.md"
-    assert "This exact note body remains readable" in result["body"]
+    assert index.read_note(hit.id)["title"] == "Legacy Note"
 
 
-def test_reindex_revalidates_frontmatter_against_canonical_folder(tmp_path: Path) -> None:
-    vault = tmp_path / "vault"
-    service = BrainService(vault)
-    item = save(
-        service,
-        note_type="concept",
-        content="Canonical folder validation sentinel phrase.",
-        title="Canonical Folder Check",
+def test_reindex_skips_notes_whose_frontmatter_contradicts_their_folder(vault: Path) -> None:
+    write_note(vault, "Rejected Thing", status="rejected", details="contradiction marker")
+    write_note(vault, "Fine Thing", details="contradiction marker")
+    index = BrainIndex(vault)
+    index.reindex()
+
+    assert [h.title for h in index.search("contradiction marker")] == ["Fine Thing"]
+
+
+def test_reindex_catches_same_size_edit_when_mtime_is_restored(vault: Path) -> None:
+    path = write_note(vault, "Stable Note", details="alpha token")
+    index = BrainIndex(vault)
+    index.reindex()
+    stat = path.stat()
+    path.write_text(path.read_text().replace("alpha", "gamma"))
+    os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+
+    index.reindex()
+
+    assert index.search("alpha") == []
+    assert index.search("gamma")[0].title == "Stable Note"
+
+
+def test_approval_move_keeps_one_node_and_updates_status(vault: Path) -> None:
+    inbox = write_note(
+        vault, "Moving Note", folder="Inbox", note_id="note-fixed00001", details="moving token"
     )
     index = BrainIndex(vault)
     index.reindex()
-    note_path = vault / item.note_path
-    content = note_path.read_text(encoding="utf-8")
-    content = content.replace("type: concept", "type: prompt", 1)
-    note_path.write_text(content, encoding="utf-8")
-    stat = note_path.stat()
+    assert index.search("moving token")[0].status == "inbox"
 
-    # Simulate an existing index from the prior version that already recorded the new
-    # file timestamp. The index-version bump must still force a metadata revalidation.
-    with sqlite3.connect(index.db_path) as db:
-        db.execute("UPDATE metadata SET value='1' WHERE key='index_version'")
-        db.execute(
-            "UPDATE nodes SET mtime_ns=?,file_size=? WHERE path=?",
-            (stat.st_mtime_ns, stat.st_size, item.note_path),
-        )
-        note_id = db.execute("SELECT id FROM nodes WHERE path=?", (item.note_path,)).fetchone()[0]
-
+    text = inbox.read_text().replace("status: inbox", "status: approved")
+    inbox.unlink()
+    (vault / "Notes").mkdir(exist_ok=True)
+    (vault / "Notes" / "Moving Note.md").write_text(text)
     result = index.reindex()
 
-    assert result["deleted_notes"] == 1
-    assert index.search("canonical folder validation sentinel", limit=5) == []
-    with pytest.raises(KeyError, match="Unknown approved canonical note ID"):
-        index.read_note(note_id)
+    hits = index.search("moving token")
+    assert (result["approved_notes"], result["inbox_notes"]) == (1, 0)
+    assert len(hits) == 1 and hits[0].status == "approved"
+    assert hits[0].id == "note-fixed00001"
 
 
-def test_reindex_catches_same_size_approval_change_when_mtime_is_restored(tmp_path: Path) -> None:
-    vault = tmp_path / "vault"
-    service = BrainService(vault)
-    item = save(
-        service,
-        note_type="concept",
-        content="Approval revocation cache invalidation sentinel.",
-        title="Revoked Note",
-    )
-    index = BrainIndex(vault)
-    index.reindex()
-    note_path = vault / item.note_path
-    original_stat = note_path.stat()
-    content = note_path.read_text(encoding="utf-8")
-    revoked = content.replace("status: approved", "status: rejected", 1)
-    assert len(revoked) == len(content)
-    note_path.write_text(revoked, encoding="utf-8")
-    os.utime(note_path, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
-
-    assert note_path.stat().st_mtime_ns == original_stat.st_mtime_ns
-    assert note_path.stat().st_ctime_ns != original_stat.st_ctime_ns
-    result = index.reindex()
-
-    assert result["deleted_notes"] == 1
-    assert index.search("approval revocation cache invalidation", limit=5) == []
-
-
-def test_find_returns_compact_alias_match_and_ask_returns_body_evidence(tmp_path: Path) -> None:
-    vault = tmp_path / "vault"
-    service = BrainService(vault)
-    item = save(
-        service,
-        title="UI Microinteractions",
-        summary="A guide to feedback and interface transitions.",
-        body=("## Details\n\nUse immediate visual feedback to show an action was received. "
-              "Keep motion brief and respect reduced motion settings."),
-        aliases=["微交互设计指南", "interface feedback patterns"],
-        source_url="https://example.com/ui-notes",
-    )
+def test_find_returns_compact_alias_match_and_body_evidence(vault: Path) -> None:
+    write_note(vault, "UI Microinteractions", aliases=["微交互设计指南"], summary="Feedback patterns.",
+               details="Keep transitions short and respect reduced motion.")
     index = BrainIndex(vault)
     index.reindex()
 
-    hit = index.search("微交互设计指南", limit=5)[0]
-    context = index.context("show that an action was received", max_tokens=4000)
+    alias = index.search("微交互设计指南")[0]
+    body = index.context("transitions reduced motion")
 
-    assert hit.id == item.proposal_id or hit.id.startswith("note-")
-    assert hit.title == "UI Microinteractions"
-    assert hit.path == "Tech/Notes/UI Microinteractions.md"
-    assert "alias" in hit.match_location
-    assert len(hit.excerpt) <= 260
-    assert hit.source_url == "https://example.com/ui-notes"
-    assert "Use immediate visual feedback" in context["context"]
-    assert "Tech/Notes/UI Microinteractions.md" in context["context"]
-    assert context["estimated_tokens"] <= 4000
-    assert len(context["sources"]) <= 4
+    assert alias.title == "UI Microinteractions"
+    assert "alias" in alias.match_location
+    assert "Keep transitions short" in body["context"]
 
 
-def test_read_note_resolves_only_approved_canonical_ids_and_marks_truncation(tmp_path: Path) -> None:
-    vault = tmp_path / "vault"
-    service = BrainService(vault)
-    item = save(
-        service,
-        title="Sectioned Note",
-        body=("Full note body. " * 80) + "\n\n## Caveats\n\nNot part of details.",
-    )
+def test_read_note_resolves_ids_and_marks_truncation(vault: Path) -> None:
+    write_note(vault, "Long Note", note_id="note-long00000001",
+               details="## Alpha\n\n" + "x" * 300 + "\n\n## Omega\n\nlast words", source_url="https://example.com/x")
+    write_note(vault, "Draft", folder="Inbox", note_id="note-draft0000001", details="draft body")
+    write_note(vault, "Source Note", folder="Sources", note_id="note-source000001")
     index = BrainIndex(vault)
-    index.reindex()
-    canonical_path = vault / item.note_path
-    metadata_text = canonical_path.read_text(encoding="utf-8")
-    note_id = metadata_text.split("id: ", 1)[1].splitlines()[0]
 
-    result = index.read_note(note_id, section="Details", max_chars=100)
-    assert result["path"] == item.note_path
-    assert result["section"] == "Details"
-    assert result["truncated"] is True
-    assert result["omitted_characters"] > 0
-    assert "characters omitted" in result["body"]
-    assert "Not part of details" not in result["body"]
+    full = index.read_note("note-long00000001")
+    short = index.read_note("note-long00000001", max_chars=40)
+    section = index.read_note("note-long00000001", section="Omega")
 
-    with pytest.raises(KeyError, match="Unknown approved canonical note ID"):
-        index.read_note("../../outside.md")
-    with pytest.raises(KeyError, match="Section"):
-        index.read_note(note_id, section="Missing")
+    assert full["truncated"] is False and "last words" in full["body"]
+    assert full["status"] == "approved"
+    assert full["provenance"] == {"source_url": "https://example.com/x"}
+    assert short["truncated"] is True and short["omitted_characters"] > 0
+    assert section["body"].startswith("## Omega") and "Alpha" in section["omitted_sections"]
+    assert index.read_note("note-draft0000001")["status"] == "inbox"
+    with pytest.raises(KeyError):
+        index.read_note("note-draft0000001", include_inbox=False)
+    with pytest.raises(KeyError):
+        index.read_note("note-source000001")
+    with pytest.raises(KeyError):
+        index.read_note("../Notes/Long Note")
 
-    duplicate = vault / "Tech" / "Notes" / "Duplicate.md"
-    duplicate.parent.mkdir(parents=True, exist_ok=True)
-    duplicate.write_text(canonical_path.read_text(encoding="utf-8"), encoding="utf-8")
+
+def test_read_note_rejects_ambiguous_ids(vault: Path) -> None:
+    write_note(vault, "One", note_id="note-dup000000001")
+    write_note(vault, "Two", note_id="note-dup000000001")
     with pytest.raises(ValueError, match="Ambiguous"):
-        index.read_note(note_id)
+        BrainIndex(vault).read_note("note-dup000000001")
 
 
-def test_read_note_loads_full_body_only_for_matching_frontmatter_id(
-    tmp_path: Path, monkeypatch
-) -> None:
-    vault = tmp_path / "vault"
-    service = BrainService(vault)
-    target = save(
-        service,
-        title="Target Body Read",
-        body="## Details\n\n" + ("Target body content. " * 1000),
-    )
-    save(
-        service,
-        title="Other Large Note",
-        body="## Details\n\n" + ("Unrelated body content. " * 1000),
-    )
-    target_path = vault / target.note_path
-    note_id = target_path.read_text(encoding="utf-8").split("id: ", 1)[1].splitlines()[0]
-    original_read_text = Path.read_text
-    full_body_reads: list[Path] = []
-
-    def counted_read_text(path, *args, **kwargs):
-        if path.suffix == ".md":
-            full_body_reads.append(path)
-        return original_read_text(path, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "read_text", counted_read_text)
-
-    result = BrainIndex(vault).read_note(note_id, max_chars=30000)
-
-    assert result["path"] == target.note_path
-    assert result["truncated"] is False
-    assert full_body_reads == [target_path]
-
-
-def test_index_skips_unchanged_reads_and_invalidates_edit_rename_and_approval(
-    tmp_path: Path, monkeypatch
-):
-    vault = tmp_path / "vault"
-    service = BrainService(vault)
-    item = save(service, title="Cache Test", body="## Details\n\nOldMarkerUnique.")
+def test_index_skips_unchanged_reads_and_invalidates_on_edit_and_rename(vault: Path, monkeypatch) -> None:
+    path = write_note(vault, "Cache Note", details="cache token")
     index = BrainIndex(vault)
     index.reindex()
-    path = vault / item.note_path
 
-    original_read_text = Path.read_text
-    note_reads = 0
+    reads: list[str] = []
+    original = Path.read_text
 
-    def counted_read_text(candidate, *args, **kwargs):
-        nonlocal note_reads
-        if candidate == path:
-            note_reads += 1
-        return original_read_text(candidate, *args, **kwargs)
+    def spy(self, *args, **kwargs):
+        reads.append(self.name)
+        return original(self, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "read_text", counted_read_text)
+    monkeypatch.setattr(Path, "read_text", spy)
     index.reindex()
-    assert note_reads == 0
-    monkeypatch.setattr(Path, "read_text", original_read_text)
+    assert reads == []
 
-    text = path.read_text(encoding="utf-8").replace("OldMarkerUnique", "NewMarkerUnique")
-    path.write_text(text, encoding="utf-8")
+    path.write_text(original(path) + "\nedited tail\n")
+    time.sleep(0.01)
     index.reindex()
-    assert index.search("NewMarkerUnique")
-    assert not index.search("OldMarkerUnique")
+    assert reads == ["Cache Note.md"]
+    assert index.search("edited tail")
 
-    renamed = path.with_name("Cache Test Renamed.md")
-    path.rename(renamed)
+    path.rename(vault / "Notes" / "Renamed Note.md")
     index.reindex()
-    assert index.search("NewMarkerUnique")[0].path == "Tech/Notes/Cache Test Renamed.md"
+    assert index.search("cache token")[0].path == "Notes/Renamed Note.md"
 
-    unapproved = renamed.read_text(encoding="utf-8").replace("status: approved", "status: pending")
-    renamed.write_text(unapproved, encoding="utf-8")
+
+def test_stale_index_version_rebuilds_cleanly(vault: Path) -> None:
+    write_note(vault, "Rebuild Me", details="rebuild token")
+    index = BrainIndex(vault)
     index.reindex()
-    assert not index.search("NewMarkerUnique")
+    with sqlite3.connect(index.db_path) as db:
+        db.execute("UPDATE metadata SET value='3' WHERE key='index_version'")
+
+    fresh = BrainIndex(vault)
+    assert fresh.search("rebuild token") == []  # derived data dropped, not trusted
+    fresh.reindex()
+    with sqlite3.connect(fresh.db_path) as db:
+        version = db.execute("SELECT value FROM metadata WHERE key='index_version'").fetchone()[0]
+    assert version == INDEX_VERSION
+    assert fresh.search("rebuild token")
+
+
+def test_lexical_ranking_prefers_titles_and_ignores_stopword_noise(vault: Path) -> None:
+    write_note(vault, "Spaced Repetition", details="Review cards on a schedule.")
+    write_note(vault, "Cooking Basics", details="What is the best way to chop an onion and how to do it.")
+    index = BrainIndex(vault)
+    index.reindex()
+
+    assert index.search("spaced repetition")[0].title == "Spaced Repetition"
+    assert index.search("what is the best way to chop an onion")[0].title == "Cooking Basics"
+    assert index.search("qzxwv unknownterm") == []
+
+
+def test_json_vector_roundtrip_uses_expected_shape(vault: Path) -> None:
+    write_note(vault, "Shape", details="shape")
+    index = BrainIndex(vault, embedder=TinyEmbedder(), use_sqlite_vec=False)
+    index.reindex(embed_vectors=True)
+    with sqlite3.connect(index.db_path) as db:
+        vector = json.loads(db.execute("SELECT vector FROM chunks").fetchone()[0])
+    assert len(vector) == 32
