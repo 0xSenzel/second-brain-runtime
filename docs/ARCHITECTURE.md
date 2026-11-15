@@ -201,11 +201,14 @@ flowchart LR
 flowchart TB
     q["Query"] --> promote["promote_reviewed()<br/>(writer only)"]
     promote --> refresh["Incremental lexical reindex<br/>(stat-based)"]
-    refresh --> fts["FTS5 BM25 over chunks"]
+    refresh --> fts["FTS5 BM25 over chunks<br/>title weighted 3×"]
     refresh --> vecq{"Vectors stored and<br/>query embeds in ≤ 3 s?"}
-    vecq -- "yes" --> vec["Vector search<br/>sqlite-vec, or JSON + cosine"]
-    vecq -- "no" --> warn["Warning: lexical only"]
-    fts --> rrf["Reciprocal rank fusion, k = 60"]
+    vecq -- "yes" --> vec["Vector search, cosine ≥ 0.5<br/>sqlite-vec, or JSON + cosine"]
+    vecq -- "no" --> warn["Warning: lexical only,<br/>every lexical hit kept"]
+    vec --> gate["Lexical hits must contain half<br/>of the distinctive query terms"]
+    fts --> gate
+    fts -. "lexical only" .-> rrf
+    gate --> rrf["Reciprocal rank fusion, k = 60"]
     vec --> rrf
     rrf --> weight["Inbox hits × 0.5,<br/>flag unreviewed"]
     weight --> out{"Tool"}
@@ -214,9 +217,17 @@ flowchart TB
     out -- "brain_read" --> readn["Exact note body by id"]
 ```
 
+When vectors are available, a lexical hit must also contain at least half of the
+distinctive query terms. Prefix matching otherwise returns loosely related notes for
+questions the vault can't answer. On the real-vault evaluation, hybrid search raised
+top-1 accuracy from 0.71 to 0.97 and no-answer accuracy from 0.20 to 1.00. For the
+method and caveats, see `docs/RETRIEVAL_EVALUATION.md`.
+
 Search indexes `Notes/` and `Inbox/` only. Sources, maps, and archive are excluded, so raw
 transcripts and listings can't crowd out distilled notes. The index lives in
-`.second-brain/` and can be rebuilt from the Markdown at any time.
+`.second-brain/index.sqlite3`, or at `SECOND_BRAIN_INDEX_PATH`, and can be rebuilt from the
+Markdown at any time. Vectors are stored as JSON in the index. When the `sqlite-vec`
+extension loads, the index mirrors them in a `vec0` table for faster search.
 
 ## Vault layout
 
@@ -283,7 +294,8 @@ flowchart LR
     model -. "only if the plugin is not installed<br/>(chat approval, sha-bound)" .-> appr
 ```
 
-- The HTTP listener binds to `127.0.0.1` on the host and needs a bearer token.
+- The writer listens on the Compose network. The host publishes it only on
+  `127.0.0.1:8765`, and every request needs the bearer token.
 - Captured text is stored as data and marked untrusted. Tools never act on instructions
   in it.
 - Embeddings run locally. Only the small evidence packs that search returns go to the
@@ -320,3 +332,24 @@ flowchart TB
 
 The deployment runbook in `deploy/README.md` orders the live steps: snapshot the vault,
 build the pinned image, migrate, switch Hermes, verify, and roll back if needed.
+
+## Rollout
+
+```mermaid
+flowchart TB
+    s0["0. Snapshot the vault<br/>git commit + tag"]:::live
+    s1["1. Tag runtime v4.0.0, build second-brain image,<br/>rebuild Hermes image with runtime-patch"]
+    s2["2. Compose service, token env file,<br/>tag-map.yaml, map-tags.yaml"]
+    s3["3. Stop writers, pause Obsidian Sync,<br/>brain migrate-v4 --apply"]:::live
+    s4["4. Start second-brain, switch Hermes config,<br/>skills, plugin, cron; Hermes /vault read-only"]:::live
+    s5["5. Verify: capture → inbox → approve,<br/>discard, Obsidian promotion, digest, git log"]
+    s6["Point Claude Code / Codex<br/>at 127.0.0.1:8765"]:::live
+    s0 --> s1 --> s2 --> s3 --> s4 --> s5 --> s6
+    s3 -. "fails" .-> r3["git reset to the snapshot tag"]
+    s4 -. "fails" .-> r4["Restore old Hermes config,<br/>skills, and image"]
+    classDef live stroke-width:3px
+```
+
+Steps with a thick border change live state. `deploy/README.md` holds the exact
+commands and the rollback for each step.
+
