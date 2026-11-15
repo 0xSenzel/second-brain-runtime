@@ -41,7 +41,7 @@ INBOX_SCORE_WEIGHT = 0.5
 QUERY_EMBED_TIMEOUT_SECONDS = 3.0
 RRF_K = 60
 # A vector hit below this cosine similarity is noise, not a paraphrase.
-VECTOR_MIN_SIMILARITY = 0.45
+VECTOR_MIN_SIMILARITY = 0.5
 
 # Words that match nearly every chunk and so carry no ranking signal. Dropped from the
 # lexical query only when something distinctive remains.
@@ -493,10 +493,10 @@ class BrainIndex:
 
     def _vector_ranking(
         self, db: sqlite3.Connection, query: str, candidates: int, warnings: list[str]
-    ) -> list[tuple[str, str]]:
-        """Node ids ranked by vector similarity, with the best chunk text. [] when unavailable."""
+    ) -> list[tuple[str, str]] | None:
+        """Node ids ranked by vector similarity with the best chunk text; None when unavailable."""
         if self.embedder is None:
-            return []
+            return None
         configured = str(getattr(self.embedder, "model", ""))
         stats = db.execute(
             "SELECT COUNT(*) AS total, COUNT(vector) AS embedded FROM chunks"
@@ -505,14 +505,14 @@ class BrainIndex:
             warnings.append(
                 "Vector search skipped: no note vectors yet; the embedding worker fills them in."
             )
-            return []
+            return None
         stored = self._meta(db, "embedding_model")
         if stored != configured:
             warnings.append(
                 f"Vector search skipped: indexed vectors use model {stored or 'unknown'!r}, "
                 f"configured model is {configured or 'unknown'!r}."
             )
-            return []
+            return None
         if stats["embedded"] < stats["total"]:
             warnings.append(
                 f"Vector search covers {stats['embedded']} of {stats['total']} chunks; "
@@ -524,13 +524,13 @@ class BrainIndex:
             )
         except Exception as error:  # lexical results remain usable during model outages
             warnings.append(f"Vector search failed; lexical results were used: {error}")
-            return []
+            return None
         scored: list[tuple[float, int]]
         if self.vec_enabled:
             self._vec_sync(db)
             dim = int(self._meta(db, "vec_dim") or 0)
             if dim != len(query_vector):
-                return []
+                return None
             rows = db.execute(
                 "SELECT rowid,distance FROM chunk_vec WHERE embedding MATCH ? AND k=? "
                 "ORDER BY distance",
@@ -570,17 +570,24 @@ class BrainIndex:
             evidence: dict[str, str] = {}
             warnings: list[str] = []
 
+            vector_ranking = self._vector_ranking(db, query, candidates, warnings)
+            query_tokens = _query_tokens(query)
+            # With a working vector side, a lexical hit must contain a fair share of the
+            # query terms: prefix matching otherwise lets one incidental word pull in
+            # unrelated notes, and vectors already cover paraphrases. Lexical-only
+            # search keeps every hit, because recall matters more than precision there.
+            required = _required_terms(len(query_tokens)) if vector_ranking is not None else 1
             seen_lexical: set[str] = set()
             for row in self._lexical(db, query, limit=candidates):
                 if row["node_id"] in seen_lexical:
+                    continue
+                if _matched_terms(query_tokens, row["text"]) < required:
                     continue
                 seen_lexical.add(row["node_id"])
                 scores[row["node_id"]] = 1.0 / (RRF_K + len(seen_lexical))
                 evidence[row["node_id"]] = row["text"]
 
-            for rank, (node_id, text) in enumerate(
-                self._vector_ranking(db, query, candidates, warnings), 1
-            ):
+            for rank, (node_id, text) in enumerate(vector_ranking or [], 1):
                 scores[node_id] = scores.get(node_id, 0.0) + 1.0 / (RRF_K + rank)
                 evidence.setdefault(node_id, text)
 
@@ -907,11 +914,24 @@ class BrainIndex:
         )
 
 
-def _fts_expression(query: str) -> str:
+def _query_tokens(query: str) -> list[str]:
     tokens = [token for token in TOKEN_RE.findall(query.lower()) if len(token) > 1]
     distinctive = [token for token in tokens if token not in STOPWORDS]
-    tokens = distinctive or tokens
-    return " OR ".join(f'"{token.replace(chr(34), "")}"*' for token in tokens[:12])
+    return list(dict.fromkeys((distinctive or tokens)[:12]))
+
+
+def _required_terms(count: int) -> int:
+    """How many distinct query terms one chunk must contain to count as a lexical hit."""
+    return max(1, math.ceil(count / 2))
+
+
+def _matched_terms(tokens: list[str], text: str) -> int:
+    words = TOKEN_RE.findall(text.lower())
+    return sum(any(word.startswith(token) for word in words) for token in tokens)
+
+
+def _fts_expression(query: str) -> str:
+    return " OR ".join(f'"{token.replace(chr(34), "")}"*' for token in _query_tokens(query))
 
 
 def _status_allowed(metadata: dict, folder_status: str) -> bool:

@@ -1,9 +1,32 @@
+"""Retrieval evaluation.
+
+Two ways to run it:
+
+* `--vault PATH --queries FILE --mode lexical|hybrid [--out FILE]` scores a real vault
+  (schema 4: `Notes/` and `Inbox/`) against a YAML list of queries. Each query is
+  `{query: str, expected: [note titles], kind: optional label}`; an empty `expected`
+  list is a no-answer query that should return nothing. Matching is by title. Results
+  and query files stay outside the repository.
+* With no `--vault`, it seeds a tiny synthetic schema-4 vault and runs a built-in
+  lexical fixture, so the script is repeatable anywhere.
+
+Hybrid mode needs an embedder. `--embedder docker-ollama` embeds through
+`docker exec -i CONTAINER python3` against the Ollama server inside that container (for
+hosts with no Ollama of their own); it only reads and computes, and never writes in the
+container. `--embedder ollama` uses `OllamaEmbedder` at `--ollama-url`.
+
+The index is built in a scratch directory (`--index-path`), never inside the vault.
+`SECOND_BRAIN_CODE_ROOT` points the script at another checkout, for baselines.
+"""
+
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import statistics
+import subprocess
 import sys
 import tempfile
 import time
@@ -13,245 +36,266 @@ from typing import Any
 CODE_ROOT = Path(os.environ.get("SECOND_BRAIN_CODE_ROOT", Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(CODE_ROOT / "src"))
 
-from second_brain.api import BrainAPI  # noqa: E402
-from second_brain.service import BrainService  # noqa: E402
+import yaml  # noqa: E402
 
-CASES = [
+from second_brain.index import BrainIndex  # noqa: E402
+
+TOP_K = 5
+RANK_DEPTH = 10
+
+FIXTURE_NOTES = [
     {
-        "case": "known title",
-        "query": "UI Microinteractions",
-        "mode": "find",
-        "expected_titles": ["UI Microinteractions"],
+        "title": "UI Microinteractions",
+        "aliases": ["微交互设计指南", "interface feedback patterns"],
+        "summary": "A practical guide to feedback, transitions, and responsive interface states.",
+        "details": (
+            "Use small, immediate visual responses to show that an action was received. "
+            "Keep transitions short, preserve keyboard focus, and respect reduced motion."
+        ),
     },
     {
-        "case": "paraphrase",
-        "query": "quick visual response confirms an action happened",
-        "mode": "find",
-        "expected_titles": ["UI Microinteractions"],
-    },
-    {
-        "case": "Chinese alias",
-        "query": "微交互设计指南",
-        "mode": "find",
-        "expected_titles": ["UI Microinteractions"],
-    },
-    {
-        "case": "ambiguous matching-items request",
-        "query": "interface",
-        "mode": "find",
-        "expected_titles": ["UI Microinteractions", "Accessible Interface Review"],
-    },
-    {
-        "case": "UI-note query + exact read",
-        "query": "UI microinteractions feedback and transitions",
-        "mode": "find_read",
-        "expected_titles": ["UI Microinteractions"],
-    },
-    {
-        "case": "body-only broad question",
-        "query": "How long should transitions be and what motion setting should they respect?",
-        "mode": "ask",
-        "expected_titles": ["UI Microinteractions"],
-        "expected_evidence": "Keep transitions short",
-    },
-    {
-        "case": "no answer",
-        "query": "quantum navigation protocols on Mars",
-        "mode": "find",
-        "expected_titles": [],
+        "title": "Accessible Interface Review",
+        "aliases": ["accessibility audit", "界面无障碍检查"],
+        "summary": "Review hierarchy, contrast, keyboard flow, and responsive behavior.",
+        "details": "Check focus order and visible focus indicators.",
     },
 ]
 
+FIXTURE_QUERIES = [
+    {"kind": "exact", "query": "UI Microinteractions", "expected": ["UI Microinteractions"]},
+    {
+        "kind": "paraphrase",
+        "query": "quick visual response confirms an action happened",
+        "expected": ["UI Microinteractions"],
+    },
+    {"kind": "chinese", "query": "微交互设计指南", "expected": ["UI Microinteractions"]},
+    {
+        "kind": "body",
+        "query": "How long should transitions be and what motion setting should they respect?",
+        "expected": ["UI Microinteractions"],
+    },
+    {"kind": "no-answer", "query": "quantum navigation protocols on Mars", "expected": []},
+]
 
-def _seed(vault: Path) -> None:
-    service = BrainService(vault)
-    notes = [
-        {
-            "title": "UI Microinteractions",
-            "note_type": "concept",
-            "domain": "tech",
-            "summary": "A practical guide to feedback, transitions, and responsive interface states.",
-            "body": (
-                "## Details\n\nUse small, immediate visual responses to show that an action was received. "
-                "Keep transitions short, preserve keyboard focus, and respect reduced motion.\n\n"
-                "## Examples\n\nButtons can briefly change state after activation; inline validation "
-                "should explain how to recover."
-            ),
-            "content": "Captured UI microinteraction guidance.",
-            "tags": ["ui", "design"],
-            "aliases": ["微交互设计指南", "interface feedback patterns"],
-            "maps": ["UI Design"],
-            "source_url": "https://example.com/ui-notes",
-        },
-        {
-            "title": "Accessible Interface Review",
-            "note_type": "skill",
-            "domain": "tech",
-            "summary": "Review hierarchy, contrast, keyboard flow, and responsive behavior.",
-            "body": "## Details\n\nCheck focus order and visible focus indicators.",
-            "content": "Review checklist.",
-            "tags": ["ui", "accessibility"],
-            "aliases": ["accessibility audit", "界面无障碍检查"],
-            "maps": ["UI Design"],
-        },
-    ]
-    for note in notes:
-        proposal = service.prepare_save(**note)
-        service.commit_save(proposal.id)
+
+def _seed_fixture(vault: Path) -> None:
+    (vault / "Notes").mkdir(parents=True)
+    for note in FIXTURE_NOTES:
+        frontmatter = {
+            "id": "note-" + hashlib.sha256(note["title"].encode()).hexdigest()[:12],
+            "status": "approved", "type": "concept", "domain": "tech", "title": note["title"],
+            "tags": ["ui"], "aliases": note["aliases"],
+        }
+        header = yaml.safe_dump(frontmatter, allow_unicode=True, sort_keys=False)
+        body = f"# {note['title']}\n\n## Summary\n\n{note['summary']}\n\n## Details\n\n{note['details']}\n"
+        (vault / "Notes" / f"{note['title']}.md").write_text(f"---\n{header}---\n\n{body}", encoding="utf-8")
+
+
+class DockerOllamaEmbedder:
+    """Embeds through `docker exec` into a container that can reach Ollama. Read/compute only."""
+
+    _CODE = (
+        "import sys, json, urllib.request\n"
+        "model, url = sys.argv[1], sys.argv[2]\n"
+        "out = []\n"
+        "for text in json.load(sys.stdin):\n"
+        "    body = json.dumps({'model': model, 'prompt': text[:6000], 'keep_alive': '15m'}).encode()\n"
+        "    request = urllib.request.Request(url + '/api/embeddings', data=body,\n"
+        "        headers={'Content-Type': 'application/json'})\n"
+        "    out.append(json.load(urllib.request.urlopen(request, timeout=170))['embedding'])\n"
+        "json.dump(out, sys.stdout)\n"
+    )
+
+    def __init__(
+        self,
+        container: str = "hermes",
+        url: str = "http://ollama:11434",
+        model: str = "bge-m3",
+        cache_path: Path | None = None,
+    ):
+        self.container, self.url, self.model = container, url, model
+        self.cache_path = cache_path
+        self.cache: dict[str, list[float]] = {}
+        if cache_path and cache_path.exists():
+            self.cache = json.loads(cache_path.read_text())
+
+    @staticmethod
+    def _key(text: str) -> str:
+        return hashlib.sha256(text[:6000].encode()).hexdigest()
+
+    def _run(self, texts: list[str]) -> list[list[float]]:
+        result = subprocess.run(
+            ["docker", "exec", "-i", self.container, "python3", "-c", self._CODE, self.model, self.url],
+            input=json.dumps(texts), capture_output=True, text=True, timeout=900, check=False,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.strip()[-300:] or "docker exec failed")
+        return json.loads(result.stdout)
+
+    def embed_many(self, texts: list[str], batch_size: int = 16) -> list[list[float]]:
+        missing = [t for t in dict.fromkeys(texts) if self._key(t) not in self.cache]
+        for start in range(0, len(missing), batch_size):
+            batch = missing[start : start + batch_size]
+            for text, vector in zip(batch, self._run(batch), strict=True):
+                self.cache[self._key(text)] = vector
+        if missing and self.cache_path:
+            self.cache_path.write_text(json.dumps(self.cache))
+        return [self.cache[self._key(t)] for t in texts]
+
+    def embed(self, text: str) -> list[float]:
+        # Queries are never served from the cache: latency should include the real call.
+        return self._run([text])[0]
 
 
 def _percentile(values: list[float], percentile: float) -> float:
     ordered = sorted(values)
-    if len(ordered) == 1:
-        return ordered[0]
     position = (len(ordered) - 1) * percentile
     low = int(position)
     high = min(low + 1, len(ordered) - 1)
-    fraction = position - low
-    return ordered[low] * (1 - fraction) + ordered[high] * fraction
+    return ordered[low] + (ordered[high] - ordered[low]) * (position - low)
 
 
-def evaluate(rounds: int = 10) -> dict[str, Any]:
-    with tempfile.TemporaryDirectory(prefix="second-brain-retrieval-") as directory:
-        vault = Path(directory) / "vault"
-        _seed(vault)
-        api = BrainAPI(vault, use_embeddings=False)
-        api.reindex()
-        cases: list[dict[str, Any]] = []
-        all_latencies: list[float] = []
-        exact_read_latencies: list[float] = []
-        top1_correct = 0
-        expected_retrieved = 0
-        expected_total = 0
-        no_answer_correct = 0
-        no_answer_cases = 0
-        answer_evidence_hits = 0
-        answer_evidence_cases = 0
+def _make_index(vault: Path, embedder: Any, index_path: Path) -> BrainIndex:
+    try:
+        return BrainIndex(vault, embedder=embedder, index_path=index_path)
+    except TypeError:  # schema-3 baseline code: no index_path, index lives in the vault
+        return BrainIndex(vault, embedder=embedder)
 
-        for case in CASES:
-            label = case["case"]
-            query = case["query"]
-            mode = case["mode"]
-            expected_titles = case["expected_titles"]
-            latencies: list[float] = []
-            byte_counts: list[int] = []
-            tool_calls = 2 if mode == "find_read" else 1
-            top_result: str | None = None
-            case_top1_correct = 0
-            case_expected_retrieved = 0
-            case_expected_total = len(expected_titles) * rounds
-            case_no_answer_correct = 0
-            case_answer_evidence_hits = 0
-            for _ in range(rounds):
-                started = time.perf_counter()
-                if mode == "ask":
-                    answer = api.ask(query, max_tokens=4000)
-                    results = answer["sources"]
-                    payloads: list[Any] = [answer]
-                    evidence_text = answer["context"]
-                else:
-                    found = api.find(query, limit=5)
-                    results = found["results"]
-                    payloads = [found]
-                    evidence_text = "\n".join(result["excerpt"] for result in results)
-                titles = [result["title"] for result in results]
-                top_result = titles[0] if titles else None
-                expected = set(expected_titles)
-                if expected:
-                    case_top1_correct += int(top_result in expected)
-                    case_expected_retrieved += len(expected.intersection(titles))
-                    expected_retrieved += len(expected.intersection(titles))
-                    expected_total += len(expected)
-                else:
-                    case_no_answer_correct += int(not results)
-                    no_answer_correct += int(not results)
-                    no_answer_cases += 1
-                expected_evidence = case.get("expected_evidence")
-                if expected_evidence:
-                    answer_evidence_cases += 1
-                    if expected_evidence in evidence_text:
-                        case_answer_evidence_hits += 1
-                        answer_evidence_hits += 1
-                if mode == "find_read" and results:
-                    read_started = time.perf_counter()
-                    note = api.read(results[0]["id"])
-                    read_elapsed_ms = (time.perf_counter() - read_started) * 1000
-                    exact_read_latencies.append(read_elapsed_ms)
-                    payloads.append(note)
-                    body_retrieved = bool(note.get("body")) and note["truncated"] is False
-                else:
-                    body_retrieved = False
-                elapsed_ms = (time.perf_counter() - started) * 1000
-                latencies.append(elapsed_ms)
-                byte_counts.append(len(json.dumps(payloads, ensure_ascii=False).encode("utf-8")))
-            all_latencies.extend(latencies)
-            if expected_titles:
-                top1_correct += case_top1_correct
-            cases.append(
-                {
-                    "case": label,
-                    "query": query,
-                    "p50_ms": round(statistics.median(latencies), 2),
-                    "p95_ms": round(_percentile(latencies, 0.95), 2),
-                    "tool_calls": tool_calls,
-                    "mean_response_bytes": round(statistics.mean(byte_counts)),
-                    "top_result": top_result,
-                    "top1_accuracy": (
-                        round(case_top1_correct / rounds, 3) if expected_titles else None
-                    ),
-                    "recall_at_5": (
-                        round(case_expected_retrieved / case_expected_total, 3)
-                        if case_expected_total
-                        else None
-                    ),
-                    "answer_evidence_rate": (
-                        round(case_answer_evidence_hits / rounds, 3)
-                        if case.get("expected_evidence")
-                        else None
-                    ),
-                    "no_answer_accuracy": (
-                        round(case_no_answer_correct / rounds, 3)
-                        if not expected_titles
-                        else None
-                    ),
-                    "body_retrieved_untruncated": body_retrieved,
-                }
-            )
-        return {
-            "fixture": "two approved canonical notes; lexical-only mode",
-            "rounds_per_case": rounds,
-            "cases": cases,
-            "overall_p50_ms": round(statistics.median(all_latencies), 2),
-            "overall_p95_ms": round(_percentile(all_latencies, 0.95), 2),
-            "exact_read_p50_ms": round(statistics.median(exact_read_latencies), 2)
-            if exact_read_latencies
-            else None,
-            "exact_read_p95_ms": round(_percentile(exact_read_latencies, 0.95), 2)
-            if exact_read_latencies
-            else None,
-            "top1_accuracy": round(
-                top1_correct / (sum(bool(case["expected_titles"]) for case in CASES) * rounds),
-                3,
-            ),
-            "recall_at_5": round(expected_retrieved / expected_total, 3)
-            if expected_total
-            else None,
-            "answer_evidence_rate": round(answer_evidence_hits / answer_evidence_cases, 3)
-            if answer_evidence_cases
-            else None,
-            "no_answer_accuracy": round(no_answer_correct / no_answer_cases, 3)
-            if no_answer_cases
-            else None,
-        }
+
+def evaluate(
+    vault: Path,
+    queries: list[dict],
+    *,
+    mode: str,
+    embedder: Any | None,
+    index_path: Path,
+    rounds: int = 3,
+) -> dict[str, Any]:
+    if mode == "hybrid" and embedder is None:
+        raise SystemExit("hybrid mode needs --embedder")
+    use_embedder = embedder if mode == "hybrid" else None
+    index = _make_index(vault, use_embedder, index_path)
+    started = time.perf_counter()
+    index.reindex(embed_vectors=False)
+    embed_seconds = 0.0
+    if mode == "hybrid":
+        embed_started = time.perf_counter()
+        pending = index.pending_chunks()
+        vectors = embedder.embed_many([text for _id, text in pending])
+        for (chunk_id, _text), vector in zip(pending, vectors, strict=True):
+            index.store_vector(chunk_id, vector, model=embedder.model)
+        embed_seconds = time.perf_counter() - embed_started
+    index_seconds = time.perf_counter() - started
+
+    cases: list[dict[str, Any]] = []
+    latencies: list[float] = []
+    reciprocal: list[float] = []
+    top1: list[int] = []
+    recall: list[float] = []
+    no_answer: list[int] = []
+    for case in queries:
+        expected = list(case.get("expected") or [])
+        titles: list[str] = []
+        warnings: list[str] = []
+        for round_number in range(rounds):
+            t0 = time.perf_counter()
+            if hasattr(index, "_search") and hasattr(index, "vec_enabled"):
+                hits, warnings = index._search(case["query"], limit=RANK_DEPTH, hops=0)
+            else:
+                hits = index.search(case["query"], limit=RANK_DEPTH, hops=0)
+            latencies.append((time.perf_counter() - t0) * 1000)
+            if round_number == 0:
+                titles = [hit.title for hit in hits]
+        if expected:
+            ranks = [titles.index(t) + 1 for t in expected if t in titles]
+            reciprocal.append(1 / min(ranks) if ranks else 0.0)
+            top1.append(int(bool(titles) and titles[0] in expected))
+            recall.append(len([t for t in expected if t in titles[:TOP_K]]) / len(expected))
+        else:
+            no_answer.append(int(not titles))
+        cases.append(
+            {
+                "kind": case.get("kind", ""),
+                "query": case["query"],
+                "expected": expected,
+                "top_results": titles[:TOP_K],
+                "first_relevant_rank": (min(ranks) if expected and ranks else None),
+                "warnings": warnings[:3],
+            }
+        )
+
+    def mean(values: list[float]) -> float | None:
+        return round(statistics.mean(values), 3) if values else None
+
+    return {
+        "mode": mode,
+        "vault_notes": len(list((vault / "Notes").glob("*.md"))) if (vault / "Notes").is_dir() else None,
+        "queries": len(queries),
+        "answerable": len(top1),
+        "no_answer_queries": len(no_answer),
+        "top1": mean(top1),
+        "recall_at_5": mean(recall),
+        "mrr": mean(reciprocal),
+        "no_answer_accuracy": mean(no_answer),
+        "p50_ms": round(statistics.median(latencies), 2),
+        "p95_ms": round(_percentile(latencies, 0.95), 2),
+        "index_seconds": round(index_seconds, 2),
+        "embed_seconds": round(embed_seconds, 2),
+        "vector_backend": getattr(index, "vector_stats", lambda: {})().get("backend"),
+        "cases": cases,
+    }
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run the repeatable local retrieval fixture.")
-    parser.add_argument("--rounds", type=int, default=10)
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
+    parser.add_argument("--vault", type=Path, help="vault to score; omit to run the built-in fixture")
+    parser.add_argument("--queries", type=Path, help="YAML list of {query, expected, kind}")
+    parser.add_argument("--mode", choices=["lexical", "hybrid"], default="lexical")
+    parser.add_argument("--out", type=Path, help="write the JSON result here")
+    parser.add_argument("--rounds", type=int, default=3, help="timing repetitions per query")
+    parser.add_argument("--index-path", type=Path, help="scratch index file (default: temp dir)")
+    parser.add_argument("--embedder", choices=["none", "ollama", "docker-ollama"], default="none")
+    parser.add_argument("--ollama-url", default=None)
+    parser.add_argument("--container", default="hermes")
+    parser.add_argument("--embed-cache", type=Path, help="JSON cache for index-time vectors")
     args = parser.parse_args()
     if args.rounds < 1:
         parser.error("--rounds must be positive")
-    print(json.dumps(evaluate(args.rounds), ensure_ascii=False, indent=2))
+    if args.vault and not args.queries:
+        parser.error("--vault needs --queries")
+
+    embedder: Any | None = None
+    if args.mode == "hybrid":
+        if args.embedder == "docker-ollama":
+            embedder = DockerOllamaEmbedder(
+                args.container, args.ollama_url or "http://ollama:11434", cache_path=args.embed_cache
+            )
+        elif args.embedder == "ollama":
+            from second_brain.index import OllamaEmbedder
+
+            embedder = OllamaEmbedder(args.ollama_url or "http://localhost:11434")
+        else:
+            parser.error("hybrid mode needs --embedder ollama|docker-ollama")
+
+    with tempfile.TemporaryDirectory(prefix="second-brain-eval-") as scratch:
+        index_path = args.index_path or Path(scratch) / "index.sqlite3"
+        if args.vault:
+            vault = args.vault.expanduser().resolve()
+            queries = yaml.safe_load(args.queries.read_text(encoding="utf-8"))
+        else:
+            vault = Path(scratch) / "vault"
+            _seed_fixture(vault)
+            queries = FIXTURE_QUERIES
+        result = evaluate(
+            vault, queries, mode=args.mode, embedder=embedder, index_path=index_path, rounds=args.rounds
+        )
+    result["code_root"] = str(CODE_ROOT)
+    text = json.dumps(result, ensure_ascii=False, indent=2)
+    if args.out:
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        args.out.write_text(text, encoding="utf-8")
+    summary = {k: v for k, v in result.items() if k != "cases"}
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

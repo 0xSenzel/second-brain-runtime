@@ -201,3 +201,24 @@ def test_worker_replaces_vectors_from_a_different_model(tmp_path) -> None:
     with sqlite3.connect(index.db_path) as db:
         assert db.execute("SELECT COUNT(*) FROM chunks WHERE vector IS NULL").fetchone()[0] == 0
     assert index.vector_stats()["model"] == "concept-v2"
+
+
+def test_lexical_gate_applies_only_when_vector_side_works(tmp_path) -> None:
+    class Orthogonal(ConceptEmbedder):
+        """Puts every text far from every query, so only the lexical side can match."""
+
+        def embed(self, text):
+            return [0.0, 0.0, 1.0] if text.startswith("probe") else [1.0, 0.0, 0.0]
+
+    vault = tmp_path / "vault"
+    write_note(vault, "Espresso Notes", details="Dial in the espresso grind.")
+    query = "probe espresso zebra migration corridors"
+
+    plain = BrainIndex(vault)
+    plain.reindex()
+    gated = BrainIndex(vault, embedder=Orthogonal())
+    gated.reindex(embed_vectors=True)
+
+    assert titles(plain.search(query)) == ["Espresso Notes"]  # lexical-only keeps recall
+    assert gated.search(query) == []  # one incidental term of five is not enough
+    assert titles(gated.search("espresso grind")) == ["Espresso Notes"]
