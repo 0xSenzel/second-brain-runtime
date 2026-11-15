@@ -1,98 +1,78 @@
-import json
+from __future__ import annotations
+
+from pathlib import Path
 
 import pytest
 
-from second_brain.api import BrainAPI
-from second_brain.models import Proposal
-from second_brain.notes import read_note
+from second_brain.models import Connection
+from second_brain.notes import parse_note, parse_sections, render_note
+from second_brain.service import BrainService
 
 
-def prepare(api, **overrides):
-    args = dict(
-        content_or_url="Raw transcript: spoken words and slide text.",
-        note_type="prompt", title="Review a design", summary="Use this prompt to review a design.",
-        tags=["ui", "design-review"], aliases=["Design critique", "界面评审"], maps=["Design"],
+@pytest.fixture
+def service(tmp_path: Path) -> BrainService:
+    service = BrainService(tmp_path / "vault")
+    service.register_tags(["ui"])
+    return service
+
+
+def _capture(service: BrainService, **overrides):
+    payload = dict(
+        content="Raw transcript: spoken words and slide text.",
+        title="Review a design",
+        summary="Use this prompt to review a design.",
+        note_type="prompt",
+        tags=["ui"],
         body="## Prompt\n\n逐项检查界面。\n\n## Example\n\nReview the checkout form.",
     )
-    args.update(overrides)
-    return api.prepare_save(**args)
+    payload.update(overrides)
+    return service.capture(**payload)
 
 
-def test_review_and_canonical_note_contain_the_full_body(tmp_path):
-    api = BrainAPI(tmp_path / "vault", use_embeddings=False)
-    result = prepare(api, body="## Prompt\n\n" + "保留完整原文。" * 400)
-    assert result["body"].endswith("保留完整原文。" * 400)
-    assert result["commit_would_succeed"]
-    review = (api.vault / result["review_note"]).read_text()
-    assert result["body"] in review
-    assert not (api.vault / result["destination"]).exists()
-    with pytest.raises(PermissionError):
-        api.commit_save(result["proposal_id"], approved=False)
-    saved = api.commit_save(result["proposal_id"], approved=True)
-    metadata, body = read_note(api.vault / saved["note_path"])
-    assert result["body"] in body
+def test_the_full_body_is_kept_and_the_raw_source_stays_in_sources(service: BrainService) -> None:
+    long_body = "## Prompt\n\n" + "保留完整原文。" * 400
+    result = _capture(service, body=long_body)
+    approved = service.approve(result.note_id, content_sha=result.content_sha)
+
+    _, body = parse_note((service.vault / approved.note_path).read_text(encoding="utf-8"))
+    assert long_body in body
     assert "Raw transcript:" not in body
-    assert "Raw transcript:" in (api.vault / saved["source_path"]).read_text()
-    assert api.find("保留完整原文")["results"]
-    assert not api.find("spoken words and slide text")["results"]
-    read_result = api.read(metadata["id"])
-    assert read_result["body"].startswith("# Review a design")
-    assert "保留完整原文。" in read_result["body"]
-    assert not read_result["truncated"]
-    assert api.validate()["findings"] == []
+    assert "Raw transcript:" in (service.vault / result.source_path).read_text(encoding="utf-8")
+    item_body = parse_sections(body)[1]
+    assert item_body == long_body
 
 
-def test_revision_omitting_body_preserves_existing_reusable_content(tmp_path):
-    api = BrainAPI(tmp_path / "vault", use_embeddings=False)
-    first = prepare(api)
-    api.commit_save(first["proposal_id"], approved=True)
-    revision = prepare(api, body=None, summary="A revised description of this design prompt.")
-    assert revision["is_revision"]
-    assert revision["body"] == first["body"]
-    saved = api.commit_save(revision["proposal_id"], approved=True)
-    assert first["body"] in (api.vault / saved["note_path"]).read_text()
+def test_nested_headings_in_the_body_survive_a_parse_round_trip(service: BrainService) -> None:
+    result = _capture(service)
+    item = service.get_inbox(result.note_id)
+
+    assert item.body.startswith("## Prompt") and item.body.endswith("Review the checkout form.")
+    assert item.summary == "Use this prompt to review a design."
 
 
-def test_explicit_body_replacement_is_reviewed(tmp_path):
-    api = BrainAPI(tmp_path / "vault", use_embeddings=False)
-    first = prepare(api)
-    api.commit_save(first["proposal_id"], approved=True)
-    revision = prepare(api, body="## Prompt\n\nThe revised prompt.")
-    assert revision["body"] == "## Prompt\n\nThe revised prompt."
-    saved = api.commit_save(revision["proposal_id"], approved=True)
-    content = (api.vault / saved["note_path"]).read_text()
-    assert "The revised prompt." in content
-    assert "逐项检查界面。" not in content
+def test_a_note_without_details_omits_the_section(service: BrainService) -> None:
+    result = _capture(service, body="")
+    text = (service.vault / result.note_path).read_text(encoding="utf-8")
+
+    assert "## Details" not in text
+    assert parse_sections(parse_note(text)[1])[1] == ""
 
 
-def test_old_pending_proposal_without_body_still_loads(tmp_path):
-    api = BrainAPI(tmp_path / "vault", use_embeddings=False)
-    result = prepare(api)
-    data = api.service.get_proposal(result["proposal_id"]).to_dict()
-    data.pop("body", None)
-    restored = Proposal.from_dict(json.loads(json.dumps(data)))
-    assert restored.body == ""
-
-
-def test_summary_validation_stays_separate_from_body(tmp_path):
-    api = BrainAPI(tmp_path / "vault", use_embeddings=False)
-    result = prepare(api, summary="## A misplaced document")
-    assert not result["commit_would_succeed"]
-    assert any("summary" in error for error in result["blocking_problems"])
-
-
-def test_independent_notes_from_one_source_keep_distinct_proposals(tmp_path):
-    api = BrainAPI(tmp_path / "vault", use_embeddings=False)
-    first = prepare(api, source_url="https://example.com/video/123", title="Method one",
-                    destination="Tech/Prompts/Method one.md")
-    second = prepare(api, source_url="https://example.com/video/123", title="Method two",
-                     destination="Tech/Prompts/Method two.md", body="## Method\n\nA second method.")
-    assert {first["proposal_id"], second["proposal_id"]} <= {
-        item["proposal_id"] for item in api.pending()
+def test_render_note_lists_every_source_url_and_creator() -> None:
+    meta = {
+        "title": "T", "sources": ["[[a-T]]", "[[b-T]]"],
+        "source_url": "https://x.test", "source_creator": "Ann",
     }
-    api.commit_save(first["proposal_id"], approved=True)
-    # A third method with an explicit destination must not revise the first one.
-    third = prepare(api, source_url="https://example.com/video/123", title="Method three",
-                    destination="Tech/Prompts/Method three.md")
-    assert third["destination"] == "Tech/Prompts/Method three.md"
-    assert not third["is_revision"]
+    text = render_note(meta, summary="S.", body="B", connections=[Connection("about", "X", "why")])
+
+    assert "- Original: [[a-T]]\n- Original: [[b-T]]\n- URL: https://x.test\n- Creator: Ann" in text
+    assert "- about: [[X]] — why" in text
+    summary, details, connections = parse_sections(parse_note(text)[1])
+    assert (summary, details) == ("S.", "B")
+    assert connections == [Connection("about", "X", "why")]
+
+
+def test_a_summary_with_headings_is_a_soft_problem(service: BrainService) -> None:
+    result = _capture(service, summary="## A misplaced document")
+
+    assert any("summary" in problem for problem in result.problems)
