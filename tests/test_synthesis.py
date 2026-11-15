@@ -35,7 +35,7 @@ def test_digest_counts_ages_and_warnings(tmp_path: Path) -> None:
     assert data["inbox_count"] == 2
     assert data["oldest_age_days"] == 45
     assert "Old [note-1 sha-1] 45d WARN: no tags" in text
-    assert "New [note-2] 1d" in text
+    assert "New [note-2 sha-1] 1d" in text
 
 
 def test_empty_inbox_digest_is_one_line() -> None:
