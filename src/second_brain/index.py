@@ -24,7 +24,7 @@ WIKILINK_RE = re.compile(r"\[\[([^\]|#]+)(?:[|#][^\]]*)?\]\]")
 HEADING_RE = re.compile(r"(?m)^#{1,3}\s+(.+?)\s*$")
 TOKEN_RE = re.compile(r"[\w-]+", re.UNICODE)
 INDEX_VERSION = "3"
-EMBEDDING_TIMEOUT_SECONDS = 5
+EMBEDDING_TIMEOUT_SECONDS = 60
 
 
 class Embedder(Protocol):
