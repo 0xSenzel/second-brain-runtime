@@ -525,7 +525,7 @@ class _Planner:
                 "status": STATUS_APPROVED,
                 "type": note.note_type,
                 "domain": note.domain,
-                "title": note.title,
+                "title": note.title if note.new_stem == note.old_stem else note.new_stem,
                 "created": created,
                 "updated": updated,
                 "reviewed": updated,

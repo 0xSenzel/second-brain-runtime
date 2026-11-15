@@ -78,7 +78,7 @@ class DeleteWorkflow:
             "note_archive_path": self._relative(note_archive),
             "sources": sources["owned"],
             "shared_sources": sources["shared"],
-            "maps": self._affected_maps(title),
+            "maps": self._affected_maps(note_path.stem),
             "reason": str(reason or "").strip(),
         }
         self._write_pending(proposal)
@@ -102,7 +102,7 @@ class DeleteWorkflow:
             raise ValidationError("Linked sources changed since staging; proposal remains pending")
         for item in proposal["maps"]:
             self._verify_hash(self._safe_existing_file(item["path"]), item["hash"], "map")
-        if {item["path"] for item in self._affected_maps(proposal["title"])} != {
+        if {item["path"] for item in self._affected_maps(Path(proposal["note_path"]).stem)} != {
             item["path"] for item in proposal["maps"]
         }:
             raise ValidationError("Affected maps changed since staging; proposal remains pending")
@@ -272,10 +272,10 @@ class DeleteWorkflow:
             )
         return {"owned": owned, "shared": shared}
 
-    def _affected_maps(self, title: str) -> list[dict[str, Any]]:
+    def _affected_maps(self, link: str) -> list[dict[str, Any]]:
         """Maps whose generated block lists the note, with the lines that will disappear."""
         result: list[dict[str, Any]] = []
-        for path in maps.maps_listing(self.vault, title):
+        for path in maps.maps_listing(self.vault, link):
             relative = self._relative(path)
             self._safe_existing_file(relative)
             content = path.read_bytes()
@@ -285,7 +285,7 @@ class DeleteWorkflow:
                 {
                     "path": relative,
                     "hash": _sha256(content),
-                    "removed_entries": [line for line in block.splitlines() if f"[[{title}]]" in line],
+                    "removed_entries": [line for line in block.splitlines() if f"[[{link}]]" in line],
                 }
             )
         return result

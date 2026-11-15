@@ -290,7 +290,9 @@ def test_map_wrapping_preserves_human_text(vault: Path):
     assert "Human intro that must stay." in body and "Human outro that must stay." in body
     start, end = body.index(migrate_v4.GENERATED_START), body.index(migrate_v4.GENERATED_END)
     block = body[start:end]
-    assert "- [[Dup]] — one" in block and "- [[Linker]] — two" in block
+    # Regeneration replaces the wrapped hand-written entries with one line per tagged note,
+    # linked by file stem, so the renamed clash gets its own entry rather than a duplicate.
+    assert "- [[Dup]] —" in block and "- [[Dup (Tech)]] —" in block and "- [[Linker]] —" in block
     assert "Human" not in block
     other = (vault / "Maps/Other.md").read_text()
     assert migrate_v4.GENERATED_START in other and migrate_v4.GENERATED_END in other

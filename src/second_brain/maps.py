@@ -59,7 +59,12 @@ def _map_tags(metadata: dict[str, Any]) -> set[str]:
 
 
 def _approved_notes(vault: Path) -> list[tuple[str, set[str], str]]:
-    """(title, tags, first-sentence entry) for every approved note, sorted by title."""
+    """(link, tags, first-sentence entry) for every approved note, sorted by link.
+
+    The link is the file stem, not the title: Obsidian resolves [[...]] by file name, and a
+    title can differ from it (a clash suffix, characters a file name cannot hold). Two notes
+    that share a title would otherwise both link to whichever one Obsidian finds first.
+    """
     root = vault / NOTES_FOLDER
     found: list[tuple[str, set[str], str]] = []
     if not root.is_dir():
@@ -71,9 +76,9 @@ def _approved_notes(vault: Path) -> list[tuple[str, set[str], str]]:
             continue
         if metadata.get("status") != STATUS_APPROVED or metadata.get("type") == "map":
             continue
-        title = str(metadata.get("title") or path.stem)
         summary, _, _ = parse_sections(body)
-        found.append((title, {str(tag) for tag in metadata.get("tags") or []}, map_entry(title, summary)))
+        link = path.stem
+        found.append((link, {str(tag) for tag in metadata.get("tags") or []}, map_entry(link, summary)))
     return sorted(found, key=lambda item: (item[0].casefold(), item[0]))
 
 
@@ -114,8 +119,8 @@ def regenerate(vault: Path, *, only_tags: set[str] | None = None) -> list[Path]:
     return changed
 
 
-def maps_listing(vault: Path, title: str) -> list[Path]:
-    """Maps whose generated block currently links `title`. Used to preview a deletion."""
+def maps_listing(vault: Path, link: str) -> list[Path]:
+    """Maps whose generated block currently links `link` (a note's file stem)."""
     root = Path(vault) / MAPS_FOLDER
     hits: list[Path] = []
     if not root.is_dir():
@@ -123,7 +128,7 @@ def maps_listing(vault: Path, title: str) -> list[Path]:
     for path in sorted(root.rglob("*.md")):
         text = path.read_text(encoding="utf-8")
         start, end = text.find(START_MARKER), text.find(END_MARKER)
-        if start != -1 and end != -1 and f"[[{title}]]" in text[start:end]:
+        if start != -1 and end != -1 and f"[[{link}]]" in text[start:end]:
             hits.append(path)
     return hits
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import importlib
 import json
 import os
 import sys
@@ -81,17 +82,13 @@ def _jsonable(value: Any) -> Any:
     return value
 
 
-def _load_json(path: Path | None) -> Any:
-    return json.loads(path.read_text(encoding="utf-8")) if path else None
-
-
 def _migrate_v4(args: argparse.Namespace) -> Any:
     # Imported lazily: the module only matters for this command, and it must not
     # construct a BrainAPI (that would touch a schema-3 vault).
-    from . import migrate_v4
+    migrate_v4 = importlib.import_module("second_brain.migrate_v4")
 
     vault = Path(args.vault or os.environ.get("SECOND_BRAIN_VAULT") or DEFAULT_VAULT).expanduser().resolve()
-    plan = migrate_v4.plan(vault, tag_map=_load_json(args.tag_map), map_tags=_load_json(args.map_tags))
+    plan = migrate_v4.plan(vault, tag_map=args.tag_map, map_tags=args.map_tags)
     if args.apply:
         return migrate_v4.apply(plan)
     return {"dry_run": True, "plan": _jsonable(plan)}
