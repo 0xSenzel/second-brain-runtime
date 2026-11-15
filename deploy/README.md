@@ -15,6 +15,7 @@ Shell variables: `DEP=~/.hermes/deployment`, `VAULT=~/Documents/second-brain`,
 | `hermes/skills/` | Four rewritten skills |
 | `hermes/cron-jobs.json` | Two cron jobs in the exact `jobs.json` record schema |
 | `hermes/approval-plugin/` | `/brain-review`, `/brain-approve`, `/brain-discard` |
+| `hermes/runtime-patch/` | Schema 4 port of the Hermes image's durable-video plugin and retention worker (see its README) |
 | `clients/` | Proposed Claude Code and Codex entries |
 
 ## Order and downtime
@@ -62,7 +63,10 @@ docker run --rm --entrypoint python second-brain-runtime:4.0.0 -c "import second
 The printed path must be under `site-packages`, not an editable path.
 To build from GitHub instead, drop `--build-context` and push the tag first.
 
-Rollback: `docker image rm second-brain-runtime:4.0.0; rm -r $DEP/second-brain`.
+Also build the patched Hermes image now (no restart): follow `hermes/runtime-patch/README.md`,
+section Rebuild, up to `docker compose build hermes`. **[LIVE: copies files into the deployment, edits the compose tag, builds an image]**
+
+Rollback: `docker image rm second-brain-runtime:4.0.0; rm -r $DEP/second-brain`; for the Hermes image, restore `hermes-runtime.pre-v4.bak` and the old tag.
 
 ## 2. Prepare the compose service and migration maps
 
@@ -155,10 +159,12 @@ docker cp hermes:/opt/data/config.yaml /tmp/config.live.yaml
    unverified; follow `--help`. The timezone is global: the container has `TZ=Asia/Kuala_Lumpur`.
    Existing jobs show `+08:00` offsets, so no per-job field exists or is needed.
 
-Restart only what changed:
+Restart only what changed. This uses the image built in step 1, so the video worker and the
+hooks run the schema 4 port:
 
 ```bash
-docker compose -f $DEP/compose.yaml up -d hermes video-worker   # recreates hermes for the new env and mount
+docker compose -f $DEP/compose.yaml up -d hermes video-worker   # recreates both for the new image, env and mount
+docker exec --user hermes hermes /opt/hermes/.venv/bin/python /opt/durable-video/inbox.py status
 ```
 
 Rollback: stop `second-brain`, restore `config.yaml.pre-v4` and `skills.pre-v4` with `docker cp`,
@@ -201,11 +207,9 @@ Mac clients: merge the entries from `clients/` into the real configs yourself **
 
 ## Known gaps to settle before step 4
 
-- `hermes-runtime/plugin/__init__.py` (lines 130-150) and `hermes-runtime/extension/retention.py`
-  hook the removed tools `brain_prepare_save`, `brain_commit_save`, `brain_reject_save` and read
-  `.second-brain/proposals` and `Reviews/Pending`. After the migration the hooks never fire and
-  the retention reader fails closed on a missing proposal store. Result: scratch video files are
-  not pruned on approval. Update that image or accept 7-day expiry. This runbook does not touch it.
+- The image-baked video hooks and retention worker are ported in `hermes/runtime-patch/`. The
+  port is untested against a live Hermes, and skills must pass the video's canonical URL as
+  `source_url` so retention can link the note to the job.
 - File paths cannot cross containers. Skills now pass source text as `content`.
 - `brain_digest` should print `note_id` and the first 8 characters of `content_sha` per line,
   so the plugin commands work straight from the digest.
