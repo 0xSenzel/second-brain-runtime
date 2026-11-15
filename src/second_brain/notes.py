@@ -90,8 +90,21 @@ def parse_sections(body: str) -> tuple[str, str, list[Connection]]:
         summary, _, rest = summary_part.partition("\n## Details\n")
         details = rest.rpartition("\n## Connections\n")[0] if "\n## Connections\n" in rest else rest
     else:
-        summary = summary_part.partition("\n## Connections\n")[0] if summary_part else ""
-        summary = summary.partition("\n## Source\n")[0]
+        # Notes written before the Details section existed put their own `##` sections
+        # straight after the summary. The summary ends at the first heading; what follows,
+        # up to the renderer's trailing sections, is that note's body and must survive a
+        # revision rather than be read as part of the summary or dropped.
+        cut = len(summary_part)
+        if "\n## Connections\n" in summary_part:
+            cut = summary_part.rfind("\n## Connections\n")
+        else:
+            for marker in ("\n## Maps\n", "\n## Source\n"):
+                if marker in summary_part:
+                    cut = min(cut, summary_part.find(marker))
+        content = summary_part[:cut]
+        heading = re.search(r"(?m)^## ", content)
+        split = heading.start() if heading else len(content)
+        summary, details = content[:split], content[split:]
     tail = body.rpartition("\n## Connections\n")[2] if "\n## Connections\n" in body else ""
     connections: list[Connection] = []
     for line in tail.partition("\n## Source\n")[0].splitlines():

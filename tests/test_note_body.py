@@ -76,3 +76,20 @@ def test_a_summary_with_headings_is_a_soft_problem(service: BrainService) -> Non
     result = _capture(service, summary="## A misplaced document")
 
     assert any("summary" in problem for problem in result.problems)
+
+
+def test_legacy_sections_after_the_summary_are_body_not_summary() -> None:
+    from second_brain.notes import parse_sections
+
+    body = (
+        "\n# Old prompt\n\n## Summary\n\nOne plain paragraph.\n"
+        "## What this prompt is useful for\n\nUse it when unsure.\n\n## Original prompt\n\n> Ask first.\n"
+        "\n## Connections\n\n- supports: [[Other]] — reason\n"
+        "\n## Maps\n\n- [[Prompts]]\n\n## Source\n\n- URL: x\n"
+    )
+
+    summary, details, connections = parse_sections(body)
+
+    assert summary == "One plain paragraph."
+    assert details.startswith("## What this prompt is useful for") and "> Ask first." in details
+    assert [c.target for c in connections] == ["Other"]
