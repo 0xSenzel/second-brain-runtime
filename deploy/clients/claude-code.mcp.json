@@ -1,12 +1,12 @@
 {
-  "_comment": "PROPOSAL. Merge into ~/.claude.json (user scope) via `claude mcp add-json`, or a project .mcp.json. Claude Code expands ${VAR} in url and headers from the shell environment. Export SECOND_BRAIN_HTTP_TOKEN in the shell profile or a secrets manager; never write the value here.",
+  "_comment": "Claude Code user-scope entry. The relay reads the token from the 600-mode env file and forwards stdio to the writer; it never opens the vault.",
   "mcpServers": {
     "second-brain": {
-      "type": "http",
-      "url": "http://127.0.0.1:18765/mcp",
-      "headers": {
-        "Authorization": "Bearer ${SECOND_BRAIN_HTTP_TOKEN}"
-      }
+      "type": "stdio",
+      "command": "/Users/senzel/.local/bin/uv",
+      "args": ["run", "--directory", "/Users/senzel/Desktop/codes/second-brain-runtime", "second-brain-mcp",
+               "--connect", "http://127.0.0.1:18765/mcp",
+               "--token-file", "/Users/senzel/.hermes/deployment/second-brain.env"]
     }
   }
 }

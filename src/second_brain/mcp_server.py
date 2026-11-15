@@ -315,7 +315,22 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--transport", choices=["stdio", "streamable-http"], default="stdio")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument(
+        "--connect",
+        metavar="URL",
+        help="Relay stdio to a running HTTP writer instead of serving the vault (no vault access)",
+    )
+    parser.add_argument(
+        "--token-file",
+        help="File holding SECOND_BRAIN_HTTP_TOKEN for --connect (default: the environment)",
+    )
     args = parser.parse_args(argv)
+    if args.connect:
+        # Checked before anything builds a BrainAPI: a relay must never open the vault.
+        from .relay import run
+
+        run(args.connect, args.token_file)
+        return
     _start_writer_background()
     if args.transport == "stdio":
         mcp.run(transport="stdio")
