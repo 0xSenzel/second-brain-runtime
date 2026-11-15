@@ -54,6 +54,57 @@ flowchart LR
 | Vault | Mac file system, bind-mounted | Source of truth. Git records every write. Obsidian Sync carries it to the phone. |
 | Claude Code, Codex | Mac | Connect to the writer over HTTP on `127.0.0.1`, or run a read-only stdio server. |
 
+## Repositories and locations
+
+Five git repositories and two unversioned locations make up the system. Each one has a
+single job, and the boundary between them is a deliberate trust or lifecycle split.
+
+```mermaid
+flowchart LR
+    subgraph code["Code repositories (GitHub)"]
+        rt["second-brain-runtime<br/>0xSenzel/second-brain-runtime<br/>brain code + deploy/ staging"]
+        vs["video-saving<br/>0xSenzel/video-saving<br/>Douyin and YouTube capture"]
+        ha["hermes-agent<br/>NousResearch/hermes-agent<br/>upstream, read only"]
+    end
+    subgraph data["Data repository (GitHub)"]
+        vault[("second-brain<br/>0xSenzel/second-brain<br/>the vault: Markdown notes")]
+    end
+    subgraph mac["Mac, not versioned"]
+        dep["~/.hermes/deployment<br/>compose files, token,<br/>image build contexts"]
+        reg["~/.agent-registry (local git)<br/>MCP declarations for<br/>Claude Code and Codex"]
+    end
+    subgraph docker["Docker"]
+        img1["image second-brain-runtime:4.0.x"]
+        img2["image hermes-local:durable-video-*"]
+        img3["image hermes-video-capture"]
+        vol[("volume hermes-data (/opt/data)<br/>live Hermes config, .env,<br/>skills, plugins, cron")]
+    end
+
+    rt -- "git tag → docker build" --> img1
+    rt -- "deploy/hermes/runtime-patch<br/>copied into" --> dep
+    rt -- "deploy/hermes/skills, plugin,<br/>config snippet copied into" --> vol
+    ha -. "official image<br/>nousresearch/hermes-agent" .-> img2
+    dep -- "hermes-runtime/ build" --> img2
+    vs -- "docker build" --> img3
+    img1 -- "only writer (rw mount)" --> vault
+    img2 -. "read-only mount" .-> vault
+    reg -- "declares relay command;<br/>Claude and Codex configs copy it" --> rt
+```
+
+| Location | What it owns | Why it is separate | How a change ships |
+|---|---|---|---|
+| `~/Desktop/codes/second-brain-runtime` (this repository) | The brain: `src/second_brain/` (service, index, API, MCP server, relay, migration), tests, these docs, and `deploy/`, which stages every file that goes into Hermes or the Mac clients | Reusable code with no private content, so it can be shared and versioned on its own | Tag a release, rebuild `second-brain-runtime:<tag>`, recreate the `second-brain` container. Mac clients run the relay from this checkout, so they pick up `master` on their next start |
+| `~/Documents/second-brain` (vault) | Notes, sources, maps, archive, `.brain-schema.json`; `.second-brain/` holds the gitignored index and locks | Private content with its own history. Git records one commit per brain write, and Obsidian Sync carries it to the phone | Only the brain writes it. The git journal never pushes; push it yourself when you want an off-machine copy |
+| `~/.hermes/video-saving` | The capture service (browser, yt-dlp, media checks), Hermes capture clients, and media-processing scripts | Downloads and browses untrusted sites, so it runs isolated with no vault mount and no Hermes credentials | Rebuild `hermes-video-capture` with `~/.hermes/deployment/update-video-capture.sh` |
+| `~/.hermes/hermes-agent` | Upstream Hermes source, also used to build the Hermes desktop app | Third-party code; read for reference, not edited | The container runs the pinned official image `nousresearch/hermes-agent:v0.22.5`, not this checkout |
+| `~/.hermes/deployment` (not versioned) | `compose.yaml` and `compose.second-brain.yaml`, `second-brain.env` (the bearer token), `hermes-runtime/` (builds `hermes-local` from the official image plus the durable-video plugin and retention worker), `second-brain/` (build context), `migration/` | Machine-specific wiring and secrets | Edit, then `docker compose up -d <service>`. The tracked copy of each change lives in `deploy/` in this repository |
+| Docker volume `hermes-data` (`/opt/data` in Hermes) | The live Hermes `config.yaml`, `.env`, skills, plugins (including `second-brain-approval`), cron jobs, sessions | Hermes owns it at runtime | Install files with a short-lived helper container so they stay owned by the `hermes` user (see `deploy/README.md`) |
+| `~/.agent-registry` (local git) | `mcp/second-brain.json`: the declaration that Claude Code (`~/.claude.json`) and Codex (`~/.codex/config.toml`) must match | One source for MCP entries across tools | Change it in a registry maintenance transaction, update the tool configs, then `agent-sync doctor` |
+
+`~/.hermes/config.yaml` and `~/.hermes/skills` on the Mac are older copies. The running
+agent and the desktop app (which connects to `127.0.0.1:9119`) use the copies in the
+`hermes-data` volume.
+
 ## Runtime modules
 
 ```mermaid
