@@ -13,7 +13,7 @@ no path to approval.
 
 ASSUMPTION to verify against the schema-4 build: `brain_inbox` returns the Inbox items
 (a list, or an object holding one) and each item carries note_id, title, summary, body,
-content_sha. Adjust `_items` if the real shape differs.
+content_sha. brain_inbox(note_id) returns {"item": {...}} with the full body.
 """
 from __future__ import annotations
 
@@ -52,7 +52,13 @@ def register(ctx) -> None:
         return _payload(ctx.call_mcp(SERVER, tool, arguments or {}, timeout=60))
 
     def find(note_id: str) -> dict:
-        for item in _items(call("brain_inbox")):
+        # brain_inbox(note_id) returns {"item": {...}} with the full body and content_sha;
+        # the listing form omits the body, so a review built from it would be incomplete.
+        payload = call("brain_inbox", {"note_id": note_id})
+        item = payload.get("item") if isinstance(payload, dict) else None
+        if isinstance(item, dict) and item.get("note_id") == note_id:
+            return item
+        for item in _items(payload):
             if item.get("note_id") == note_id:
                 return item
         raise LookupError(f"{note_id} is not in the Inbox")
