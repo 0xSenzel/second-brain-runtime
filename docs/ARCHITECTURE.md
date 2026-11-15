@@ -1,149 +1,322 @@
-# Architecture and operating model
+# Second brain architecture (schema 4)
 
-## User flow
+The second brain is a Markdown knowledge vault in Obsidian with one service that writes
+to it. Agents capture material into an inbox in a single call. You review the inbox in
+batches, in chat, in Telegram, or in Obsidian. Approved notes become the trusted
+library. Search covers both, and it labels inbox items as unreviewed.
+
+The rest of this page shows the system from the outside in: where each part runs, how a
+capture becomes a note, how search ranks results, and how the service keeps the vault
+consistent.
+
+## System context
 
 ```mermaid
 flowchart LR
-    A["Paste text, URL, video, PDF, or file"] --> B["Codex or Claude prepares a proposal"]
-    B --> V{"Structural rules met?"}
-    V -->|No| B2["blocking_problems returned; fix and re-prepare"]
-    B2 --> B
-    V -->|Yes| C{"You approve?"}
-    C -->|No| D["Rejected; never enters search"]
-    C -->|Yes| E["Raw source + distilled note + map entry"]
-    E --> F["Local SQLite, FTS, embeddings, and typed links"]
-    F --> G["Ask a question in Codex or Claude"]
-    F --> H["Browse maps and graph in Obsidian"]
-    G --> I["Compact answer with note and URL citations"]
+    you(["You"])
+    tg["Telegram"]
+    phone["Obsidian on phone"]
+    mac["Obsidian on Mac"]
+    cc["Claude Code / Codex on Mac"]
+
+    subgraph docker["Docker on the Mac (Compose network)"]
+        hermes["Hermes gateway<br/>agent + skills + approval plugin"]
+        capture["video-capture<br/>browser + yt-dlp"]
+        worker["video-worker<br/>retention"]
+        brain["second-brain<br/>MCP writer (HTTP :8765)"]
+        ollama["Ollama<br/>bge-m3 embeddings"]
+    end
+
+    vault[("Vault<br/>~/Documents/second-brain<br/>Markdown + git")]
+    sync(["Obsidian Sync"])
+
+    you --> tg --> hermes
+    you --> phone
+    you --> mac
+    you --> cc
+    hermes -- "MCP over HTTP" --> brain
+    hermes --> capture
+    cc -- "MCP over HTTP<br/>127.0.0.1:8765" --> brain
+    brain -- "embed" --> ollama
+    brain -- "read/write" --> vault
+    hermes -. "read-only mount" .-> vault
+    worker -. "read-only mount" .-> vault
+    mac <--> vault
+    phone <--> sync <--> mac
 ```
 
-## Storage boundary
+| Part | Runs where | Role |
+|---|---|---|
+| `second-brain` | Its own container, pinned to a tagged runtime build | The only process that writes the vault. Serves MCP over streamable HTTP. |
+| Hermes | `hermes` container | Telegram agent. Extracts content, calls brain tools, sends the daily digest. |
+| Approval plugin | Inside Hermes | Runs `/brain-approve` without a model turn, so approval comes from you, not the model. |
+| Ollama | `ollama` container | Local `bge-m3` embeddings. No note text leaves the machine for embedding. |
+| Vault | Mac file system, bind-mounted | Source of truth. Git records every write. Obsidian Sync carries it to the phone. |
+| Claude Code, Codex | Mac | Connect to the writer over HTTP on `127.0.0.1`, or run a read-only stdio server. |
 
-- Markdown is authoritative and remains readable without this runtime.
-- `.second-brain/index.sqlite3` contains regenerable lexical, vector, and graph indexes.
-- Raw material is retained under `Sources/` and explicitly marked as untrusted data.
-- A proposal stores a concise `summary` and a separate reviewed Markdown `body`. The
-  body appears in the approved note under Details and in the full review preview.
-  Older proposals default to an empty body through `Proposal.from_dict`; the vault
-  layout and index schema remain compatible.
-- Approved notes live at `<Domain>/<Type>/`, where domain is `Personal` or `Tech` and type
-  is one of `Notes`, `Prompts`, `Skills`, `Projects`, or `Essays`. `Maps/` holds the index
-  notes; `Reviews/` holds proposals.
-- Pending and rejected material is never indexed.
-- Embeddings are computed locally by Ollama. Only the small excerpts returned to the active
-  agent may be sent to its model provider.
+## Runtime modules
 
-## The layout invariant
+```mermaid
+flowchart TB
+    subgraph surface["Surfaces"]
+        mcp["mcp_server.py<br/>tools, instructions,<br/>stdio or HTTP + bearer token"]
+        cli["cli.py<br/>brain ..."]
+    end
+    api["api.py — BrainAPI<br/>modes: writer / reader<br/>approval: chat / human"]
+    subgraph core["Write path"]
+        service["service.py — BrainService<br/>capture, inbox, approve,<br/>discard, promote_reviewed"]
+        validation["validation.py<br/>approval gate, lint"]
+        notes["notes.py<br/>render and parse notes"]
+        maps["maps.py<br/>generated maps, Review.base"]
+        vaultio["vaultio.py<br/>lock, atomic write, git journal"]
+        deletion["deletion.py<br/>two-step archive"]
+    end
+    subgraph read["Read path"]
+        index["index.py — BrainIndex<br/>FTS5 + vectors, RRF"]
+        embedding["embedding.py<br/>OllamaEmbedder, EmbeddingWorker"]
+    end
+    synthesis["synthesis.py<br/>digest, weekly report"]
+    ingest["ingest.py<br/>URL, PDF, YouTube, file"]
+    migrate["migrate_v4.py<br/>schema 3 → 4"]
 
-A note's path is a pure function of two closed sets — its domain and its type — and of
-nothing else. Subject matter is carried in tags.
+    mcp --> api
+    cli --> api
+    cli --> migrate
+    api --> ingest
+    api --> service
+    api --> index
+    api --> synthesis
+    api --> deletion
+    service --> validation
+    service --> notes
+    service --> maps
+    service --> vaultio
+    deletion --> vaultio
+    deletion --> maps
+    index --> embedding
+    synthesis --> index
+```
 
-This is the constraint the rest of the design leans on, and it was learned the hard way. An
-earlier version routed on a single `kind` string that an agent chose freely at save time,
-and that string became a directory. Because `kind` conflated *what a thing is* with *what
-it is about*, the vault grew two parallel topic trees for the same material, and `Sources/`
-acquired subject folders it should never have had.
+`models.py` holds the shared constants and result types that every module imports.
 
-Two orthogonal closed sets give a predictable grid instead. A topic can never become a
-folder, so material belonging in several places is never forced to pick one parent, and
-adding a domain or type is a deliberate edit to `models.py` rather than something a save
-decides on its own.
+## Note lifecycle
 
-Type folders stay flat. Retrieval runs on search, tags, maps, and links, none of which
-consult folder depth, so nesting buys nothing and costs a single-parent choice.
+```mermaid
+stateDiagram-v2
+    [*] --> Inbox: brain_capture
+    Inbox --> Inbox: brain_update_inbox
+    Inbox --> Notes: approve (chat, /brain-approve, CLI)
+    Inbox --> Notes: status approved in Obsidian, then promote_reviewed
+    Inbox --> Inbox: promotion fails, review_problems written
+    Inbox --> ArchiveInbox: brain_discard
+    Notes --> Notes: approve an inbox item that revises it
+    Notes --> ArchiveNotes: prepare_delete, then commit_delete
+    ArchiveInbox --> [*]
+    ArchiveNotes --> [*]
 
-## The structural gate
+    state "Archive/Inbox" as ArchiveInbox
+    state "Archive/Notes" as ArchiveNotes
+```
 
-Guidance written in prose is advice an agent drops under context pressure, so the rules
-that keep a note findable are enforced in `validation.check_proposal`, which
-`commit_save` runs before opening any file. A proposal is refused unless it carries a
-summary that is prose rather than a pasted document, at least two registered tags, at least
-two aliases, and at least one map.
+- **Inbox** notes are searchable at once, ranked at half weight, and marked
+  `unreviewed`. They never appear on maps.
+- **Approval** binds to `content_sha`, the SHA-256 of the inbox file you reviewed. Any
+  later edit changes the hash, and the approval no longer applies.
+- **A revision** keeps the note's `id` and `created` date and appends the new source to
+  `sources`. Git keeps the previous text.
+- **Archive** moves never delete. Each archive action writes a receipt.
 
-Two consequences are deliberate:
+## Capture and review
 
-- A refusal leaves the vault byte-for-byte unchanged, and the proposal stays pending, so a
-  blocked save is always resumable.
-- `brain_prepare_save` reports the same failures up front as `blocking_problems`, so they
-  surface while they still cost nothing, rather than after the user has approved something
-  that will then refuse to commit.
+```mermaid
+sequenceDiagram
+    autonumber
+    actor You
+    participant TG as Telegram
+    participant H as Hermes agent
+    participant P as Approval plugin
+    participant B as second-brain
+    participant V as Vault (git)
 
-Because the gate asks agents to fix and re-prepare, and re-preparing mints a new proposal
-id, `prepare_save` retires any pending proposal holding identical content from the same
-source and destination. Separate task notes from one source retain distinct proposals. Otherwise every blocked save would strand its earlier attempt in the queue forever.
+    You->>TG: Share a link, "save this"
+    TG->>H: Message
+    H->>H: Extract transcript, frames, provenance
+    H->>B: brain_find(topic)
+    B-->>H: Related notes
+    H->>B: brain_capture(summary, body, raw content, tags, revises?)
+    B->>V: Sources/… + Inbox/… , git commit
+    B-->>H: note_id, content_sha, problems
+    H-->>TG: "Saved to Inbox" + problems to fix later
 
-Notes edited by hand bypass all of this, so `validation.lint_vault` applies the same rules
-to the whole vault and reports what fails, reachable as `brain_validate` or `brain validate`.
+    Note over H,B: Weekdays 08:30, Hermes cron
+    H->>B: brain_digest
+    B-->>H: Inbox items with note_id and sha prefix
+    H-->>TG: Digest
 
-## Schema version
+    You->>TG: /brain-approve note-… 1a2b3c4d
+    TG->>P: Command (no model turn)
+    P->>B: brain_inbox(note_id) then brain_approve(note_id, content_sha)
+    B->>B: Check sha and approval gate
+    B->>V: Inbox → Notes, maps regenerated, git commit
+    B-->>P: Approved path
+    P-->>TG: Done
+```
 
-The runtime and the vault are separate repositories. That keeps reusable code apart from
-private writing, but it means either can be rolled back without the other, and a layout
-change is exactly the kind of edit that spans both — the move to `<Domain>/<Type>/` altered
-`models.py` and relocated every note in the same breath.
+You can also approve in Obsidian. Open **Views/Review.base**, change `status` to
+`approved`, and the writer promotes the note the next time it runs a tool or restarts.
+When the gate fails, the note stays in `Inbox/` and its `review_problems` property says why.
 
-`SCHEMA_VERSION` names the layout the code produces and is stamped into the vault as
-`.brain-schema.json`. The file is tracked, not kept under the gitignored index, so it
-travels with a clone rather than being regenerated to whatever the local code believes.
+When the approval plugin is installed, Hermes hides `brain_approve` from the model. A
+prompt injection in captured content can then write to the inbox, but it can't approve
+anything.
 
-Comparison happens in `_check_schema`, which runs *before* `_ensure_layout` creates or
-retires anything, and deliberately does not raise. On a mismatch the runtime returns without
-touching the vault at all: reorganising a vault written for a different layout is precisely
-the damage the stamp exists to prevent, and opening one is a read.
+## Write path
 
-A mismatch then blocks writes through `_require_matching_schema` while leaving retrieval
-working, since reading a vault whose layout has moved is harmless. Both `doctor` and
-`validate` report it, so the condition is visible before anyone tries to save.
+```mermaid
+flowchart LR
+    call["Write tool call"] --> mode{"Writer mode?"}
+    mode -- "no (reader)" --> ro["Return read-only error"]
+    mode -- "yes" --> schema{"Schema stamp = 4?"}
+    schema -- "no" --> block["SchemaMismatch:<br/>run brain migrate-v4"]
+    schema -- "yes" --> lock["VaultLock<br/>flock .second-brain/write.lock"]
+    lock --> compute["Compute every new file"]
+    compute --> gate{"Approval gate<br/>(approve only)"}
+    gate -- "problems" --> refuse["ValidationError,<br/>vault unchanged"]
+    gate -- "pass" --> write["atomic_write / atomic_move<br/>temp file + fsync + rename"]
+    write --> regen["maps.regenerate<br/>for affected tags"]
+    regen --> git["GitJournal.commit<br/>only the touched paths"]
+    git --> reindex["Lexical reindex"]
+    reindex --> queue["Embedding worker<br/>fills missing vectors later"]
+```
 
-Retiring a folder requires it to be completely empty, not merely free of Markdown. The
-weaker guard made attachments collateral: a PDF or image left in a retired folder was
-deleted because it was not a note.
+- One writer process plus a file lock removes write races between clients.
+- Atomic renames mean a crash leaves either the old file or the new one, never half of one.
+- The git journal commits only the paths a write touched, so your own uncommitted edits
+  stay out of brain commits. Git never pushes.
+- Embedding runs on a background thread. A slow or stopped Ollama never blocks a save.
 
-## Retrieval
+## Search
 
-`brain_find` returns compact matches from approved canonical notes. `brain_read` resolves an
-exact stable ID and returns its body or a selected heading, with truncation and omitted
-sections reported explicitly. Legacy approved notes without frontmatter IDs use a
-deterministic path-derived ID. `brain_ask` returns up to four cited evidence notes in a
-4,000-token budget. Maps, sources, and review folders are excluded from normal retrieval.
-The MCP server reuses its API and index objects per resolved vault configuration. Reading
-an ID scans candidate frontmatter first and loads the full body only after finding a match.
+```mermaid
+flowchart TB
+    q["Query"] --> promote["promote_reviewed()<br/>(writer only)"]
+    promote --> refresh["Incremental lexical reindex<br/>(stat-based)"]
+    refresh --> fts["FTS5 BM25 over chunks"]
+    refresh --> vecq{"Vectors stored and<br/>query embeds in ≤ 3 s?"}
+    vecq -- "yes" --> vec["Vector search<br/>sqlite-vec, or JSON + cosine"]
+    vecq -- "no" --> warn["Warning: lexical only"]
+    fts --> rrf["Reciprocal rank fusion, k = 60"]
+    vec --> rrf
+    rrf --> weight["Inbox hits × 0.5,<br/>flag unreviewed"]
+    weight --> out{"Tool"}
+    out -- "brain_find" --> find["Compact hits:<br/>id, title, snippet, status"]
+    out -- "brain_ask" --> ask["Up to 4 cited notes<br/>within the token budget"]
+    out -- "brain_read" --> readn["Exact note body by id"]
+```
 
-SQLite full-text search runs first. `brain_find` stays lexical; `brain_ask` tries local
-embeddings only when lexical search returns no results. Embedding failures leave lexical
-results available. Semantic fallback checks that stored vectors use the configured model
-and warns when the vector index has incomplete coverage. Foreground find and ask calls
-update the lexical index without doing embedding work. Reindexing walks only canonical
-content folders and compares file size, modification time, change time, and inode before
-opening notes. A changed index version triggers a full metadata validation. Changed notes
-are checked against their folder's domain and type before indexing. Markdown remains the
-source of truth, so a new note, edit, rename, status change, or deletion invalidates the
-corresponding index row. Write-triggered embedding refreshes retry only chunks still missing
-vectors.
+Search indexes `Notes/` and `Inbox/` only. Sources, maps, and archive are excluded, so raw
+transcripts and listings can't crowd out distilled notes. The index lives in
+`.second-brain/` and can be rebuilt from the Markdown at any time.
 
-Graph expansion is opt-in. Scores are computed from a snapshot of direct scores. Reading
-the live table let a score awarded to a neighbour be re-propagated when that neighbour came
-up as a later seed, compounding one hop into an arbitrarily large one.
+## Vault layout
 
-Supported typed relationships are `about`, `created-by`, `contradicts`, `derived-from`,
-`requires`, `similar-to`, `supports`, and `uses`. Links work in both directions during
-retrieval.
+```mermaid
+flowchart LR
+    root[("Vault root")]
+    root --> inbox["Inbox/<br/>status: inbox"]
+    root --> notes["Notes/<br/>status: approved, flat"]
+    root --> sources["Sources/<br/>raw captures, untrusted"]
+    root --> mapsd["Maps/<br/>generated maps,<br/>Tag Registry.md"]
+    root --> archive["Archive/<br/>Inbox, Notes, Sources,<br/>Reviews, Receipts"]
+    root --> views["Views/<br/>Review.base"]
+    root --> stamp[".brain-schema.json<br/>schema_version: 4"]
+    root --> state[".second-brain/<br/>index, locks (gitignored)"]
+    notes -- "sources:" --> sources
+    inbox -- "sources:" --> sources
+    mapsd -- "map_tags select" --> notes
+```
 
-## Write safety
+Folders express lifecycle. Type (`concept`, `prompt`, `skill`, `project`, `essay`) and
+domain (`personal`, `tech`) are frontmatter properties, checked against closed sets in
+code. Topic lives in tags from `Maps/Tag Registry.md`. A map is a note with `map_tags`.
+The service rewrites only the block between `<!-- brain:generated:start -->` and
+`<!-- brain:generated:end -->`, so text you write around it stays.
 
-Capture is deliberately split into two calls. Preparing creates only a pending review note.
-Committing requires a proposal ID plus explicit approval. This prevents an ordinary
-question, retrieved prompt, or malicious webpage from silently changing approved knowledge.
+## Approval gate
 
-The rules agents must follow are published as MCP server instructions rather than kept only
-in the vault's `AGENTS.md`, because that file is loaded only when a session's working
-directory is inside the vault. A containerised agent answering from a chat platform would
-never see it.
+A note can't reach `Notes/` unless it has:
 
-## Migration
+- a prose summary without Markdown headings, up to 1,500 characters;
+- one to five tags, all registered;
+- a valid type and domain;
+- a `revises` target that exists, for a revision.
 
-The pilot migration is copy-only. It reads a bounded set of notes from the old vault and
-creates pending proposals in the new vault. Nothing is automatically approved and the source
-vault is not changed. Imported proposals arrive without aliases or maps on purpose, so each
-one must be curated before the gate will let it commit — that is what stops a bulk import
-from dumping unfindable notes into the library.
+Capture accepts notes that fail these rules and reports the problems. Approval refuses
+them.
+
+## Trust boundaries
+
+```mermaid
+flowchart LR
+    subgraph untrusted["Untrusted"]
+        web["Web pages, videos,<br/>captions, PDFs"]
+        srcs["Sources/ content"]
+    end
+    subgraph agent["Model-driven"]
+        model["Hermes / Claude / Codex model"]
+    end
+    subgraph human["Human-only"]
+        cmd["/brain-approve command"]
+        obs["Obsidian status edit"]
+        clia["brain approve (CLI)"]
+    end
+    subgraph service["second-brain"]
+        cap["capture → Inbox"]
+        appr["approve → Notes"]
+    end
+    web --> model
+    model --> cap
+    cap --> srcs
+    cmd --> appr
+    obs --> appr
+    clia --> appr
+    model -. "only if the plugin is not installed<br/>(chat approval, sha-bound)" .-> appr
+```
+
+- The HTTP listener binds to `127.0.0.1` on the host and needs a bearer token.
+- Captured text is stored as data and marked untrusted. Tools never act on instructions
+  in it.
+- Embeddings run locally. Only the small evidence packs that search returns go to the
+  active agent's model provider.
+
+## Background jobs
+
+| Job | Where | Schedule | Effect |
+|---|---|---|---|
+| Embedding worker | `second-brain` thread | Every 30 seconds, with backoff | Fills missing vectors. |
+| Promote reviewed | `second-brain` | Startup and before reads | Promotes inbox notes you approved in Obsidian. |
+| Inbox digest | Hermes cron | Weekdays 08:30 | Sends the inbox list to Telegram. |
+| Weekly report | Hermes cron | Sundays 18:00 | Duplicates, unlinked notes, tags without maps, stale inbox, orphan sources. Report only. |
+| Video retention | `video-worker` | Hourly | Prunes captured media after its note is approved or discarded. |
+
+## Migration from schema 3
+
+```mermaid
+flowchart TB
+    start["brain migrate-v4 --dry-run"] --> review["Review plan JSON,<br/>tag-map.yaml, map-tags.yaml"]
+    review --> pre{"git repo, clean tree,<br/>stamp 3, HEAD unchanged?"}
+    pre -- "no" --> stop["Refuse"]
+    pre -- "yes" --> m1["Move Domain/Type notes to Notes/,<br/>rename clashes, rewrite links"]
+    m1 --> m2["source_note → sources,<br/>attach orphan sources"]
+    m2 --> m3["Apply tag map,<br/>rewrite registry"]
+    m3 --> m4["Add map_tags,<br/>wrap entries in markers"]
+    m4 --> m5["Pending proposals → Inbox/"]
+    m5 --> m6["Reviews/ → Archive/Reviews/"]
+    m6 --> m7["Remove empty schema-3 folders,<br/>write Review.base, stamp 4"]
+    m7 --> m8["Regenerate maps, reindex"]
+    m8 --> commit["One git commit"]
+    m1 & m2 & m3 & m4 & m5 & m6 & m7 & m8 -. "any failure" .-> rollback["Reset to HEAD,<br/>remove only created paths"]
+```
+
+The deployment runbook in `deploy/README.md` orders the live steps: snapshot the vault,
+build the pinned image, migrate, switch Hermes, verify, and roll back if needed.
