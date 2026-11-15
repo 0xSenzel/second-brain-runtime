@@ -1,185 +1,213 @@
 """The structural rules, enforced rather than requested.
 
 Prose in AGENTS.md is advice an agent may drop under context pressure. Everything in
-here is checked before a note reaches the vault, so a malformed note cannot be written
-in the first place. `check_proposal` guards the write path; `lint_vault` applies the
+here is checked before a note leaves the inbox, so a malformed note cannot become
+approved knowledge. `check_for_approval` guards the write path; `lint_vault` applies the
 same rules to notes edited by hand.
+
+Capture is cheap by design: these rules are soft at capture time (reported as problems)
+and hard only at approval.
 """
 
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
+
+import yaml
 
 from .models import (
     DOMAINS,
+    INBOX_FOLDER,
     MAX_SUMMARY,
-    MIN_ALIASES,
-    MIN_MAPS,
+    MAX_TAGS,
     MIN_TAGS,
     NOTE_TYPES,
+    NOTES_FOLDER,
+    SOURCES_FOLDER,
+    STATUS_APPROVED,
     TAG_RE,
-    ValidationError,
-    validate_domain,
-    validate_note_type,
 )
-from .notes import read_note
-
-if TYPE_CHECKING:  # pragma: no cover - typing only
-    from .models import Proposal
+from .notes import parse_note, parse_sections
 
 
-def check_proposal(proposal: Proposal, *, registered_tags: set[str]) -> None:
-    """Raise ValidationError unless the proposal can become a well-formed note.
+def _fields(item: Any) -> dict[str, Any]:
+    """Normalise an InboxItem or a frontmatter mapping (plus `summary`) to one shape."""
+    if isinstance(item, Mapping):
+        return {
+            "summary": str(item.get("summary") or ""),
+            "tags": [str(tag) for tag in item.get("tags") or []],
+            "note_type": str(item.get("note_type") or item.get("type") or ""),
+            "domain": str(item.get("domain") or ""),
+            "revises": str(item.get("revises") or ""),
+        }
+    return {
+        "summary": item.summary,
+        "tags": list(item.tags),
+        "note_type": item.note_type,
+        "domain": item.domain,
+        "revises": item.revises,
+    }
 
-    Every rule here answers the same question: will this note still be findable in six
-    months? Tags and maps are the retrieval surface, aliases are the alternate search
-    phrasings, and the summary is what the index ranks on.
+
+def _note_exists(vault: Path, note_id: str) -> bool:
+    root = vault / NOTES_FOLDER
+    if not root.is_dir():
+        return False
+    for path in root.rglob("*.md"):
+        try:
+            metadata, _ = parse_note(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, yaml.YAMLError):
+            continue
+        if metadata.get("id") == note_id:
+            return True
+    return False
+
+
+def check_for_approval(item: Any, *, registered_tags: set[str], vault: Path) -> list[str]:
+    """Problems that block approval. An empty list means the note may be approved.
+
+    Every rule answers one question: will this note still be findable in six months?
+    Tags are the retrieval surface and the summary is what the index ranks on.
     """
+    fields = _fields(item)
     problems: list[str] = []
+    summary = fields["summary"]
 
-    try:
-        validate_note_type(proposal.note_type)
-    except ValidationError as error:
-        problems.append(str(error))
+    if fields["note_type"] not in NOTE_TYPES:
+        problems.append(f"type {fields['note_type']!r} is not one of {sorted(NOTE_TYPES)}")
+    if fields["domain"] not in DOMAINS:
+        problems.append(f"domain {fields['domain']!r} is not one of {sorted(DOMAINS)}")
 
-    try:
-        validate_domain(proposal.domain)
-    except ValidationError as error:
-        problems.append(str(error))
-
-    if not proposal.title.strip():
-        problems.append("title cannot be empty")
-
-    if not proposal.summary.strip():
+    if not summary.strip():
         problems.append(
             "summary cannot be empty: it is the text the search index ranks on, "
             "so a note without one is close to unfindable"
         )
-    elif re.search(r"(?m)^#{1,6}\s+\S", proposal.summary):
-        # A summary with headings is a whole document that was passed to the wrong
-        # field. It gets rendered under the note's own '## Summary' heading, nesting
-        # sections inside it and leaking Markdown into the map entry.
+    elif re.search(r"(?m)^#{1,6}\s+\S", summary):
+        # A summary with headings is a whole document passed to the wrong field. It is
+        # rendered under the note's own '## Summary' heading, so it would nest sections
+        # inside it and leak Markdown into the map entry.
         problems.append(
             "summary contains Markdown headings, so it is a document rather than a "
-            "summary. Pass the summary text only; use body for the reusable note "
-            "and content_or_url for the raw source"
+            "summary. Keep the summary to plain prose and put the rest in the body"
         )
-    elif len(proposal.summary) > MAX_SUMMARY:
+    elif len(summary) > MAX_SUMMARY:
         problems.append(
-            f"summary is {len(proposal.summary)} characters, over the {MAX_SUMMARY} "
-            "limit. A summary is what the index ranks on and what the map entry quotes; "
+            f"summary is {len(summary)} characters, over the {MAX_SUMMARY} limit. "
+            "A summary is what the index ranks on and what the map entry quotes; "
             "put the detail in the note body instead"
         )
 
-    if len(proposal.tags) < MIN_TAGS:
-        problems.append(
-            f"needs at least {MIN_TAGS} tags for retrieval, got {len(proposal.tags)}"
-        )
-
-    malformed = [tag for tag in proposal.tags if not TAG_RE.match(tag)]
-    if malformed:
-        problems.append(f"tags must be lowercase-kebab-case, got {malformed}")
-
-    if registered_tags:
-        unknown = sorted(set(proposal.tags) - registered_tags)
-        if unknown:
-            problems.append(
-                f"tags {unknown} are not registered in Maps/Tag Registry.md. "
-                "Add them there in the same proposal, with a line saying what each one means."
-            )
-
-    if len(proposal.aliases) < MIN_ALIASES:
-        problems.append(
-            f"needs at least {MIN_ALIASES} aliases covering how this would be searched for "
-            f"later, including the original language when the source is not English, "
-            f"got {len(proposal.aliases)}"
-        )
-
-    if len(proposal.maps) < MIN_MAPS:
-        problems.append(
-            f"needs at least {MIN_MAPS} map. A note reachable from no map is unreachable "
-            "by browsing. Name an existing map or propose a new one."
-        )
-
-    if problems:
-        raise ValidationError(
-            f"Proposal {proposal.id} does not satisfy the vault structure:\n"
-            + "\n".join(f"  - {problem}" for problem in problems)
-        )
-
-
-def lint_note(metadata: dict[str, Any], *, registered_tags: set[str]) -> list[str]:
-    """Structural problems in one already-written note. Empty list means conforming."""
-    problems: list[str] = []
-    note_type = str(metadata.get("type") or "")
-
-    if note_type in {"source", "map", "review", "dashboard", "collection"}:
-        return problems
-
-    if note_type not in NOTE_TYPES:
-        problems.append(f"type {note_type!r} is not one of {sorted(NOTE_TYPES)}")
-
-    if str(metadata.get("domain") or "") not in DOMAINS:
-        problems.append(
-            f"domain {metadata.get('domain')!r} is not one of {sorted(DOMAINS)}"
-        )
-
-    tags = [str(tag) for tag in (metadata.get("tags") or [])]
+    tags = fields["tags"]
     if len(tags) < MIN_TAGS:
-        problems.append(f"has {len(tags)} tags, needs {MIN_TAGS}")
+        problems.append(f"needs at least {MIN_TAGS} tag for retrieval, got {len(tags)}")
+    elif len(tags) > MAX_TAGS:
+        problems.append(f"needs at most {MAX_TAGS} tags, got {len(tags)}")
     malformed = [tag for tag in tags if not TAG_RE.match(tag)]
     if malformed:
-        problems.append(f"tags not in lowercase-kebab-case: {malformed}")
-    if registered_tags:
-        unknown = sorted(set(tags) - registered_tags)
-        if unknown:
-            problems.append(f"unregistered tags: {unknown}")
-
-    if len(metadata.get("aliases") or []) < MIN_ALIASES:
-        problems.append(f"has {len(metadata.get('aliases') or [])} aliases, needs {MIN_ALIASES}")
-
-    if len(metadata.get("maps") or []) < MIN_MAPS:
-        problems.append("is not listed on any map, so it cannot be found by browsing")
-
-    if metadata.get("status") != "approved":
+        problems.append(f"tags must be lowercase-kebab-case, got {malformed}")
+    unknown = sorted({tag for tag in tags if TAG_RE.match(tag)} - registered_tags)
+    if unknown:
         problems.append(
-            f"status is {metadata.get('status')!r}, so it is excluded from every search answer"
+            f"tags {unknown} are not registered in Maps/Tag Registry.md. "
+            "Register them first, with a line saying what each one means."
         )
 
-    if "source_url" in metadata and metadata.get("source_url") is None:
-        problems.append("source_url is null; omit the key entirely when there is no URL")
+    if fields["revises"] and not _note_exists(Path(vault), fields["revises"]):
+        problems.append(f"revises {fields['revises']!r}, but no approved note has that id")
 
     return problems
 
 
-def lint_vault(vault: Path, *, registered_tags: set[str], folders: tuple[str, ...]) -> dict:
-    """Check hand-edited notes against the same rules the write path enforces."""
+def lint_note(metadata: dict[str, Any], *, summary: str, registered_tags: set[str], vault: Path) -> list[str]:
+    """Structural problems in one already-written approved note. Empty means conforming."""
+    note_type = str(metadata.get("type") or "")
+    if note_type in {"source", "map", "review", "dashboard", "collection"}:
+        return []
+    problems = check_for_approval(
+        {**metadata, "summary": summary}, registered_tags=registered_tags, vault=vault
+    )
+    if metadata.get("status") != STATUS_APPROVED:
+        problems.append(
+            f"status is {metadata.get('status')!r}, so it is not approved knowledge"
+        )
+    if "source_url" in metadata and metadata.get("source_url") is None:
+        problems.append("source_url is null; omit the key entirely when there is no URL")
+    return problems
+
+
+def _lint_folder(
+    vault: Path, folder: str, registered_tags: set[str]
+) -> tuple[int, int, list[dict[str, Any]]]:
+    """(checked, conforming, findings) for one folder."""
     findings: list[dict[str, Any]] = []
-    checked = 0
-    for folder in folders:
+    checked = bad = 0
+    root = vault / folder
+    if not root.is_dir():
+        return 0, 0, findings
+    for path in sorted(root.rglob("*.md")):
+        relative = path.relative_to(vault).as_posix()
+        try:
+            metadata, body = parse_note(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, yaml.YAMLError):
+            metadata, body = {}, ""
+        if not metadata:
+            findings.append(
+                {"path": relative, "problems": ["no readable frontmatter, so it is invisible to the index"]}
+            )
+            continue
+        checked += 1
+        summary, _, _ = parse_sections(body)
+        problems = lint_note(metadata, summary=summary, registered_tags=registered_tags, vault=vault)
+        if folder == INBOX_FOLDER:
+            # An inbox note is expected to be unapproved; only the approval rules matter.
+            problems = [problem for problem in problems if not problem.startswith("status is")]
+        if problems:
+            bad += 1
+            findings.append({"path": relative, "problems": problems})
+    return checked, checked - bad, findings
+
+
+def orphan_sources(vault: Path) -> list[str]:
+    """Source files that no note in Notes/ or Inbox/ lists in `sources`."""
+    referenced: set[str] = set()
+    for folder in (NOTES_FOLDER, INBOX_FOLDER):
         root = vault / folder
         if not root.is_dir():
             continue
-        for path in sorted(root.rglob("*.md")):
-            metadata, _ = read_note(path)
-            if not metadata:
-                findings.append(
-                    {
-                        "path": path.relative_to(vault).as_posix(),
-                        "problems": ["no frontmatter, so it is invisible to the index"],
-                    }
-                )
+        for path in root.rglob("*.md"):
+            try:
+                metadata, _ = parse_note(path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, yaml.YAMLError):
                 continue
-            checked += 1
-            problems = lint_note(metadata, registered_tags=registered_tags)
-            if problems:
-                findings.append(
-                    {"path": path.relative_to(vault).as_posix(), "problems": problems}
-                )
+            for link in metadata.get("sources") or []:
+                referenced.add(str(link).removeprefix("[[").removesuffix("]]").split("|", 1)[0].strip())
+    root = vault / SOURCES_FOLDER
+    if not root.is_dir():
+        return []
+    return [
+        path.relative_to(vault).as_posix()
+        for path in sorted(root.rglob("*.md"))
+        if path.stem not in referenced
+    ]
+
+
+def lint_vault(vault: Path, *, registered_tags: set[str]) -> dict:
+    """Check approved notes against the rules the write path enforces.
+
+    Inbox notes are reported apart: being incomplete is their normal state, so they must
+    not make the approved notes look unhealthy.
+    """
+    vault = Path(vault)
+    checked, conforming, findings = _lint_folder(vault, NOTES_FOLDER, registered_tags)
+    inbox_checked, _, inbox_findings = _lint_folder(vault, INBOX_FOLDER, registered_tags)
     return {
         "checked_notes": checked,
-        "conforming": checked - len(findings),
+        "conforming": conforming,
         "findings": findings,
+        "inbox": {"checked": inbox_checked, "findings": inbox_findings},
+        "orphan_sources": orphan_sources(vault),
     }

@@ -15,34 +15,37 @@ from second_brain.models import SCHEMA_VERSION, VAULT_SCHEMA_FILE, SchemaMismatc
 from second_brain.service import BrainService
 
 
-def _prepare(service: BrainService, **overrides):
-    payload = dict(
-        note_type="concept",
-        domain="tech",
-        content="Body text.",
-        title="Schema Demo",
-        summary="A note used to exercise the schema stamp.",
-        tags=["testing", "fixture"],
-        aliases=["Schema demo note", "Stamp demo"],
-        maps=["Test Map"],
-    )
-    payload.update(overrides)
-    return service.prepare_save(**payload)
+def _stamp(vault: Path, payload: dict | str) -> None:
+    text = payload if isinstance(payload, str) else json.dumps(payload)
+    (vault / VAULT_SCHEMA_FILE).write_text(text, encoding="utf-8")
 
 
-def test_a_new_vault_is_stamped_with_the_current_schema(tmp_path: Path) -> None:
+def _write_attempts(service: BrainService) -> list:
+    return [
+        lambda: service.capture(content="c", title="T", summary="S", tags=["x"]),
+        lambda: service.register_tags(["x"]),
+        lambda: service.approve("note-000000000000", content_sha="0"),
+        lambda: service.discard("note-000000000000"),
+        lambda: service.update_inbox("note-000000000000", title="x"),
+    ]
+
+
+def test_a_new_vault_is_stamped_and_gets_the_schema_4_folders(tmp_path: Path) -> None:
     vault = tmp_path / "vault"
     BrainService(vault)
 
     stamp = json.loads((vault / VAULT_SCHEMA_FILE).read_text(encoding="utf-8"))
 
-    assert stamp["schema_version"] == SCHEMA_VERSION
-    assert sorted(stamp["domains"]) == ["personal", "tech"]
+    assert stamp["schema_version"] == SCHEMA_VERSION == 4
+    assert stamp["domains"] == ["personal", "tech"]
     assert "concept" in stamp["note_types"]
+    for folder in ("Inbox", "Notes", "Sources", "Maps", "Views", "Templates",
+                   "Archive/Inbox", "Archive/Notes", "Archive/Sources", "Archive/Receipts"):
+        assert (vault / folder).is_dir(), folder
+    assert (vault / "Views" / "Review.base").is_file()
 
 
 def test_the_stamp_is_tracked_rather_than_hidden_in_the_generated_index(tmp_path: Path) -> None:
-    """It has to travel with the notes, so it cannot live under the gitignored index."""
     vault = tmp_path / "vault"
     BrainService(vault)
 
@@ -50,172 +53,79 @@ def test_the_stamp_is_tracked_rather_than_hidden_in_the_generated_index(tmp_path
     assert (vault / VAULT_SCHEMA_FILE).is_file()
 
 
-def test_reads_still_work_when_the_schema_disagrees(tmp_path: Path) -> None:
-    """A mismatch must not brick retrieval; only writes are unsafe."""
-    vault = tmp_path / "vault"
-    BrainService(vault)
-    (vault / VAULT_SCHEMA_FILE).write_text(
-        json.dumps({"schema_version": SCHEMA_VERSION + 1}), encoding="utf-8"
-    )
-
-    service = BrainService(vault)  # must not raise
-
-    assert service.schema_mismatch() is not None
-
-
-def test_a_newer_vault_blocks_writes_from_older_code(tmp_path: Path) -> None:
-    vault = tmp_path / "vault"
-    BrainService(vault)
-    (vault / VAULT_SCHEMA_FILE).write_text(
-        json.dumps({"schema_version": SCHEMA_VERSION + 1}), encoding="utf-8"
-    )
-    service = BrainService(vault)
-
-    with pytest.raises(SchemaMismatch, match="newer"):
-        _prepare(service)
-
-
-def test_an_older_vault_blocks_writes_until_it_is_migrated(tmp_path: Path) -> None:
-    vault = tmp_path / "vault"
-    BrainService(vault)
-    (vault / VAULT_SCHEMA_FILE).write_text(
-        json.dumps({"schema_version": SCHEMA_VERSION - 1}), encoding="utf-8"
-    )
-    service = BrainService(vault)
-
-    with pytest.raises(SchemaMismatch, match="older"):
-        _prepare(service)
-
-
-def test_a_matching_schema_permits_writes(tmp_path: Path) -> None:
-    vault = tmp_path / "vault"
-    service = BrainService(vault)
-
-    proposal = _prepare(service)
-    saved = service.commit_save(proposal.id)
-
-    assert (vault / saved.note_path).exists()
-    assert service.schema_mismatch() is None
-
-
-def test_doctor_and_validate_report_the_mismatch(tmp_path: Path) -> None:
-    vault = tmp_path / "vault"
-    BrainService(vault)
-    (vault / VAULT_SCHEMA_FILE).write_text(
-        json.dumps({"schema_version": SCHEMA_VERSION + 1}), encoding="utf-8"
-    )
-    service = BrainService(vault)
-
-    assert "newer" in service.validate()["schema_mismatch"]
-
-
-# --- a vault this code does not understand must not be touched -----------------------
-
-
-def test_a_mismatched_vault_is_not_reorganised_on_open(tmp_path: Path) -> None:
-    """Retiring folders ran before the schema was checked, so a read-only open would
-    reorganise — and partly delete — a vault written by a different layout."""
-    vault = tmp_path / "vault"
-    (vault / "Knowledge").mkdir(parents=True)
-    (vault / "Knowledge" / "paper.pdf").write_text("attachment", encoding="utf-8")
-    (vault / VAULT_SCHEMA_FILE).write_text(
-        json.dumps({"schema_version": SCHEMA_VERSION - 1}), encoding="utf-8"
-    )
-
-    service = BrainService(vault)
-
-    assert (vault / "Knowledge" / "paper.pdf").read_text() == "attachment"
-    assert service.schema_mismatch() is not None
-
-
-def test_retiring_a_folder_never_deletes_non_markdown_files(tmp_path: Path) -> None:
-    """The emptiness guard only looked for *.md, so attachments were collateral."""
-    vault = tmp_path / "vault"
-    BrainService(vault)
-    stray = vault / "Knowledge"
-    stray.mkdir(parents=True, exist_ok=True)
-    (stray / "diagram.png").write_text("image bytes", encoding="utf-8")
-
-    BrainService(vault)
-
-    assert (stray / "diagram.png").exists()
-
-
-def test_an_empty_retired_folder_is_still_removed(tmp_path: Path) -> None:
-    vault = tmp_path / "vault"
-    BrainService(vault)
-    (vault / "Knowledge").mkdir(parents=True, exist_ok=True)
-
-    BrainService(vault)
-
-    assert not (vault / "Knowledge").exists()
-
-
-# --- the stamp must not create churn or hide disagreement ----------------------------
-
-
-def test_opening_a_matching_vault_leaves_the_stamp_byte_identical(tmp_path: Path) -> None:
-    """It is a tracked file; rewriting a timestamp on every read dirties the notes repo."""
-    vault = tmp_path / "vault"
-    BrainService(vault)
-    before = (vault / VAULT_SCHEMA_FILE).read_bytes()
-
-    BrainService(vault)
-
-    assert (vault / VAULT_SCHEMA_FILE).read_bytes() == before
-
-
-def test_a_stamp_naming_different_axes_is_reported_not_overwritten(tmp_path: Path) -> None:
-    vault = tmp_path / "vault"
-    BrainService(vault)
-    (vault / VAULT_SCHEMA_FILE).write_text(
-        json.dumps(
-            {"schema_version": SCHEMA_VERSION, "domains": ["work", "life"], "note_types": ["memo"]}
-        ),
-        encoding="utf-8",
-    )
-
-    service = BrainService(vault)
-
-    assert service.schema_mismatch() is not None
-    assert "work" in (vault / VAULT_SCHEMA_FILE).read_text(encoding="utf-8")
-
-
-# --- unreadable and malformed stamps --------------------------------------------------
-
-
-def test_an_unreadable_stamp_is_reported_rather_than_crashing(tmp_path: Path) -> None:
-    """read_text was inside the try, but OSError was not in the caught tuple — so the
-    exact case the error message names was the one that escaped it."""
+def test_opening_a_current_vault_does_not_rewrite_the_stamp(tmp_path: Path) -> None:
     vault = tmp_path / "vault"
     BrainService(vault)
     stamp = vault / VAULT_SCHEMA_FILE
-    stamp.unlink()
-    stamp.mkdir()  # a directory where a file belongs raises IsADirectoryError
+    before = stamp.stat().st_mtime_ns
 
+    BrainService(vault)
+
+    assert stamp.stat().st_mtime_ns == before
+
+
+@pytest.mark.parametrize("version", [3, SCHEMA_VERSION + 1])
+def test_other_schemas_allow_reads_but_block_every_write(tmp_path: Path, version: int) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    _stamp(vault, {"schema_version": version})
     service = BrainService(vault)  # must not raise
 
-    assert "unreadable" in (service.schema_mismatch() or "")
-
-
-@pytest.mark.parametrize("raw", [2.9, "2", True, None, [2]])
-def test_a_non_integer_version_is_rejected_rather_than_coerced(tmp_path: Path, raw) -> None:
-    vault = tmp_path / "vault"
-    BrainService(vault)
-    (vault / VAULT_SCHEMA_FILE).write_text(json.dumps({"schema_version": raw}), encoding="utf-8")
-
-    service = BrainService(vault)
-
     assert service.schema_mismatch() is not None
+    assert service.list_inbox() == [] and service.validate()["schema_mismatch"]
+    for attempt in _write_attempts(service):
+        with pytest.raises(SchemaMismatch):
+            attempt()
+    assert service.promote_reviewed() == []
 
 
-def test_register_tags_is_blocked_on_a_mismatched_vault(tmp_path: Path) -> None:
+def test_a_schema_3_vault_is_told_to_migrate_and_is_left_untouched(tmp_path: Path) -> None:
+    """Schema 3 owns a `Notes/` folder; the old startup cleanup would have removed it."""
     vault = tmp_path / "vault"
-    BrainService(vault)
-    (vault / VAULT_SCHEMA_FILE).write_text(
-        json.dumps({"schema_version": SCHEMA_VERSION + 1}), encoding="utf-8"
-    )
+    (vault / "Notes").mkdir(parents=True)
+    (vault / "Tech" / "Notes").mkdir(parents=True)
+    (vault / "Tech" / "Notes" / "A.md").write_text("---\nid: note-1\n---\n")
+    (vault / "Empty" / "Nested").mkdir(parents=True)
+    _stamp(vault, {"schema_version": 3})
+
     service = BrainService(vault)
 
-    with pytest.raises(SchemaMismatch):
-        service.register_tags(["brand-new-tag", "another"])
+    assert "brain migrate-v4" in (service.schema_mismatch() or "")
+    assert (vault / "Notes").is_dir() and (vault / "Empty" / "Nested").is_dir()
+    assert not (vault / "Inbox").exists()
+    assert service.unmigrated_folders() == ["Tech"]
+
+
+def test_an_empty_notes_folder_is_never_removed_at_startup(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    BrainService(vault)
+    BrainService(vault)
+
+    assert (vault / "Notes").is_dir()
+
+
+def test_an_unreadable_stamp_blocks_writes(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    _stamp(vault, "{not json")
+    service = BrainService(vault)
+
+    with pytest.raises(SchemaMismatch, match="unreadable"):
+        service.register_tags(["x"])
+
+
+@pytest.mark.parametrize("raw", ['"4"', "4.0", "true", "2.9"])
+def test_a_non_integer_version_is_not_a_match(tmp_path: Path, raw: str) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    _stamp(vault, '{"schema_version": ' + raw + "}")
+
+    assert BrainService(vault).schema_mismatch() is not None
+
+
+def test_a_matching_version_with_different_axes_is_reported(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    _stamp(vault, {"schema_version": SCHEMA_VERSION, "domains": ["personal"], "note_types": ["concept"]})
+
+    assert "domains" in (BrainService(vault).schema_mismatch() or "")

@@ -1,542 +1,151 @@
+from __future__ import annotations
+
+import subprocess
 from pathlib import Path
 
 import pytest
 
 from second_brain.models import ValidationError
-from second_brain.notes import map_entry, read_note
+from second_brain.notes import read_note
 from second_brain.service import BrainService
 
 
-def _prepare(service: BrainService, **overrides):
-    """A proposal that satisfies every structural rule, so tests override one field at a time."""
+def _capture(service: BrainService, **overrides):
     payload = dict(
-        note_type="prompt",
-        domain="tech",
         content="Review a UI for hierarchy, spacing, and accessibility.",
         title="Frontend Design Critique",
         summary="A reusable prompt for structured interface critique.",
+        note_type="prompt",
         tags=["ui", "design-review"],
-        aliases=["UI critique prompt", "Interface review prompt"],
-        maps=["Frontend Design"],
-        connections=[{"relation": "about", "target": "UI Design", "reason": "Primary topic"}],
     )
     payload.update(overrides)
-    return service.prepare_save(**payload)
+    return service.capture(**payload)
 
 
-def test_prepare_is_pending_and_commit_writes_the_note(tmp_path: Path) -> None:
+def test_capture_writes_inbox_note_and_source_at_once(tmp_path: Path) -> None:
     vault = tmp_path / "vault"
     service = BrainService(vault)
 
-    proposal = _prepare(service)
+    result = _capture(service, source_url="https://example.com/a", source_kind="article")
 
-    assert proposal.status == "pending"
-    assert not (vault / "Tech" / "Prompts" / "Frontend Design Critique.md").exists()
-    assert (vault / "Reviews" / "Pending" / f"{proposal.id}.md").exists()
-
-    saved = service.commit_save(proposal.id)
-
-    assert saved.status == "approved"
-    assert saved.note_path == "Tech/Prompts/Frontend Design Critique.md"
-    assert (vault / saved.note_path).exists()
-    assert (vault / saved.source_path).exists()
-    assert not (vault / "Reviews" / "Pending" / f"{proposal.id}.md").exists()
-    assert (vault / "Reviews" / "Approved" / f"{proposal.id}.md").exists()
-
-
-def test_reject_never_writes_canonical_knowledge(tmp_path: Path) -> None:
-    vault = tmp_path / "vault"
-    service = BrainService(vault)
-    proposal = _prepare(service, note_type="skill", title="Useful Skill")
-
-    service.reject_save(proposal.id)
-
-    assert not (vault / "Tech" / "Skills" / "Useful Skill.md").exists()
-    assert (vault / "Reviews" / "Rejected" / f"{proposal.id}.md").exists()
+    assert result.note_path == "Inbox/Frontend Design Critique.md"
+    assert result.note_id.startswith("note-") and len(result.note_id) == len("note-") + 12
+    assert result.source_path.startswith("Sources/")
+    assert result.source_path.endswith("-Frontend Design Critique.md")
+    meta, _ = read_note(vault / result.note_path)
+    assert meta["status"] == "inbox" and meta["id"] == result.note_id
+    assert meta["sources"] == [f"[[{Path(result.source_path).stem}]]"]
+    assert meta["source_url"] == "https://example.com/a"
+    assert "reviewed" not in meta and "revises" not in meta and "aliases" not in meta
+    source_meta, source_body = read_note(vault / result.source_path)
+    assert source_meta["note_id"] == result.note_id
+    assert source_meta["id"] == f"source-{Path(result.source_path).stem.split('-')[0]}"
+    assert source_meta["distilled_note"] == "[[Frontend Design Critique]]"
+    assert "Review a UI" in source_body
+    assert not list((vault / "Notes").glob("*.md"))
 
 
-# --- topic must never become a folder ------------------------------------------------
+def test_capture_reports_soft_problems_instead_of_failing(tmp_path: Path) -> None:
+    service = BrainService(tmp_path / "vault")  # no registered tags
 
+    result = _capture(service, summary="", tags=[])
 
-def test_topic_lives_in_tags_not_in_the_folder_path(tmp_path: Path) -> None:
-    """The old CANONICAL_FOLDERS turned kind='frontend-resource' into a folder. It must not."""
-    vault = tmp_path / "vault"
-    service = BrainService(vault)
-
-    proposal = _prepare(
-        service,
-        note_type="concept",
-        title="Interface Reference",
-        tags=["frontend", "design-reference"],
-    )
-
-    assert proposal.target_path == "Tech/Notes/Interface Reference.md"
-    assert not (vault / "Knowledge").exists()
-    assert not (vault / "Resources").exists()
-
-
-def test_unknown_note_type_is_rejected_rather_than_silently_foldered(tmp_path: Path) -> None:
-    vault = tmp_path / "vault"
-    service = BrainService(vault)
-
-    with pytest.raises(ValidationError, match="note_type"):
-        _prepare(service, note_type="ai-coding-resource")
-
-
-def test_every_note_type_maps_to_exactly_one_folder(tmp_path: Path) -> None:
-    vault = tmp_path / "vault"
-    service = BrainService(vault)
-    expected = {
-        "concept": "Notes",
-        "prompt": "Prompts",
-        "skill": "Skills",
-        "project": "Projects",
-        "essay": "Essays",
-    }
-
-    for note_type, folder in expected.items():
-        proposal = _prepare(service, note_type=note_type, title=f"Item {note_type}")
-        assert proposal.target_path == f"Tech/{folder}/Item {note_type}.md"
-
-
-def test_domain_is_the_second_axis_and_is_closed(tmp_path: Path) -> None:
-    vault = tmp_path / "vault"
-    service = BrainService(vault)
-
-    personal = _prepare(service, domain="personal", note_type="essay", title="On Patience")
-    assert personal.target_path == "Personal/Essays/On Patience.md"
-
-    tech = _prepare(service, domain="tech", note_type="essay", title="On Patience")
-    assert tech.target_path == "Tech/Essays/On Patience.md"
-
-    with pytest.raises(ValidationError, match="domain"):
-        _prepare(service, domain="fitness", title="Squats")
-
-
-def test_sources_are_flat_and_id_prefixed(tmp_path: Path) -> None:
-    vault = tmp_path / "vault"
-    service = BrainService(vault)
-
-    proposal = _prepare(service, source_kind="tiktok-carousel")
-    saved = service.commit_save(proposal.id)
-
-    assert saved.source_path == f"Sources/{proposal.id}-Frontend Design Critique.md"
-    assert (vault / saved.source_path).parent == vault / "Sources"
-    assert [p for p in (vault / "Sources").iterdir() if p.is_dir()] == []
-
-
-def test_source_kind_is_provenance_and_does_not_affect_placement(tmp_path: Path) -> None:
-    vault = tmp_path / "vault"
-    service = BrainService(vault)
-
-    proposal = _prepare(service, note_type="concept", source_kind="reference-site", title="Refero")
-    saved = service.commit_save(proposal.id)
-    metadata, _ = read_note(vault / saved.note_path)
-
-    assert saved.note_path == "Tech/Notes/Refero.md"
-    assert metadata["type"] == "concept"
-    assert metadata["source_kind"] == "reference-site"
-
-
-# --- the validation gate -------------------------------------------------------------
+    assert any("summary" in problem for problem in result.problems)
+    assert any("tag" in problem for problem in result.problems)
+    assert (service.vault / result.note_path).exists()
 
 
 @pytest.mark.parametrize(
-    "overrides,expected",
-    [
-        ({"tags": ["ui"]}, "at least 2 tags"),
-        ({"tags": []}, "at least 2 tags"),
-        ({"maps": []}, "at least 1 map"),
-        ({"aliases": ["only one"]}, "at least 2 aliases"),
-        ({"summary": ""}, "summary"),
-    ],
+    "overrides",
+    [{"note_type": "bogus"}, {"domain": "mars"}, {"content": "  "}, {"title": " "}],
 )
-def test_commit_is_blocked_when_the_schema_is_incomplete(
-    tmp_path: Path, overrides: dict, expected: str
-) -> None:
-    vault = tmp_path / "vault"
-    service = BrainService(vault)
-    proposal = _prepare(service, **overrides)
-
-    with pytest.raises(ValidationError, match=expected):
-        service.commit_save(proposal.id)
-
-    assert not (vault / proposal.target_path).exists()
-    assert (vault / "Reviews" / "Pending" / f"{proposal.id}.md").exists()
-
-
-def test_a_blocked_commit_leaves_no_partial_write(tmp_path: Path) -> None:
-    """Source and note are written together or not at all."""
-    vault = tmp_path / "vault"
-    service = BrainService(vault)
-    proposal = _prepare(service, maps=[])
-
+def test_capture_hard_fails_only_on_unusable_input(tmp_path: Path, overrides: dict) -> None:
+    service = BrainService(tmp_path / "vault")
     with pytest.raises(ValidationError):
-        service.commit_save(proposal.id)
+        _capture(service, **overrides)
+    assert not list((service.vault / "Inbox").glob("*.md"))
 
-    assert list((vault / "Sources").glob("*.md")) == []
+
+def test_title_clashes_in_the_inbox_get_a_suffix(tmp_path: Path) -> None:
+    service = BrainService(tmp_path / "vault")
+    first = _capture(service)
+    second = _capture(service)
+
+    assert first.note_path != second.note_path
+    assert second.note_path == "Inbox/Frontend Design Critique (2).md"
 
 
-def test_destination_may_be_chosen_but_must_match_the_type(tmp_path: Path) -> None:
-    vault = tmp_path / "vault"
-    service = BrainService(vault)
-
-    ok = _prepare(
-        service, note_type="project", destination="Tech/Projects/Vault Rebuild/Overview.md"
+def test_recapturing_the_same_revision_updates_the_inbox_item_in_place(tmp_path: Path) -> None:
+    service = BrainService(tmp_path / "vault")
+    first = _capture(service, source_url="https://example.com/a", revises="note-aaaaaaaaaaaa")
+    second = _capture(
+        service, source_url="https://example.com/a", revises="note-aaaaaaaaaaaa",
+        content="Newer content.", summary="A newer summary.",
     )
-    assert ok.target_path == "Tech/Projects/Vault Rebuild/Overview.md"
 
-    with pytest.raises(ValidationError, match="destination"):
-        _prepare(service, note_type="prompt", destination="Tech/Notes/Wrong Place.md")
-
-    with pytest.raises(ValidationError, match="destination"):
-        # Right type, wrong domain.
-        _prepare(service, domain="tech", note_type="prompt", destination="Personal/Prompts/X.md")
+    assert second.updated_existing and second.note_id == first.note_id
+    assert second.note_path == first.note_path and second.source_path == first.source_path
+    assert len(service.list_inbox()) == 1
+    assert "Newer content." in (service.vault / second.source_path).read_text()
+    assert service.get_inbox(first.note_id).summary == "A newer summary."
 
 
-def test_destination_cannot_escape_the_vault(tmp_path: Path) -> None:
+def test_independent_notes_from_one_url_stay_separate(tmp_path: Path) -> None:
+    service = BrainService(tmp_path / "vault")
+    _capture(service, source_url="https://example.com/video", title="Method one")
+    _capture(service, source_url="https://example.com/video", title="Method two")
+
+    assert len(service.list_inbox()) == 2
+
+
+def test_connections_are_rendered_and_round_trip(tmp_path: Path) -> None:
+    service = BrainService(tmp_path / "vault")
+    result = _capture(
+        service, connections=[{"relation": "about", "target": "UI Design", "reason": "Primary topic"}]
+    )
+
+    text = (service.vault / result.note_path).read_text()
+    assert "- about: [[UI Design]] — Primary topic" in text
+    service.update_inbox(result.note_id, summary="Changed summary.")
+    assert "- about: [[UI Design]] — Primary topic" in (service.vault / result.note_path).read_text()
+
+
+def test_every_write_is_journaled_in_git_without_unrelated_files(tmp_path: Path) -> None:
     vault = tmp_path / "vault"
+    vault.mkdir()
+    for args in (["init", "-q"], ["config", "user.email", "t@t"], ["config", "user.name", "t"]):
+        subprocess.run(["git", *args], cwd=vault, check=True)
     service = BrainService(vault)
+    (vault / "scratch.md").write_text("user draft")
 
-    with pytest.raises(ValidationError, match="destination"):
-        _prepare(service, note_type="concept", destination="../../outside.md")
+    result = _capture(service)
+
+    log = subprocess.run(["git", "log", "--format=%s"], cwd=vault, capture_output=True, text=True).stdout
+    assert "Capture Frontend Design Critique" in log
+    shown = subprocess.run(
+        ["git", "show", "--name-only", "--format=", "HEAD"], cwd=vault, capture_output=True, text=True
+    ).stdout.split("\n")
+    assert result.note_path in shown and result.source_path in shown
+    assert "scratch.md" not in shown
 
 
-def test_new_tags_must_be_registered(tmp_path: Path) -> None:
+def test_approval_journals_the_removal_of_the_inbox_file(tmp_path: Path) -> None:
     vault = tmp_path / "vault"
+    vault.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=vault, check=True)
     service = BrainService(vault)
     service.register_tags(["ui", "design-review"])
-
-    proposal = _prepare(service, tags=["ui", "totally-new-tag"])
-
-    with pytest.raises(ValidationError, match="not registered"):
-        service.commit_save(proposal.id)
-
-    service.register_tags(["totally-new-tag"])
-    saved = service.commit_save(proposal.id)
-    assert (vault / saved.note_path).exists()
-
-
-# --- maps are the retrieval layer ----------------------------------------------------
-
-
-def test_commit_appends_the_note_to_its_map(tmp_path: Path) -> None:
-    vault = tmp_path / "vault"
-    service = BrainService(vault)
-    proposal = _prepare(service, maps=["Frontend Design"])
-
-    service.commit_save(proposal.id)
-
-    map_text = (vault / "Maps" / "Frontend Design.md").read_text(encoding="utf-8")
-    assert "[[Frontend Design Critique]]" in map_text
-    assert "A reusable prompt for structured interface critique." in map_text
-
-
-def test_map_entry_strips_markdown_headings_from_a_malformed_summary() -> None:
-    """The gate now refuses a summary containing headings, so this cannot arrive via a
-    save. It stays defence in depth for the other callers — rebuilding a map reads the
-    summary back out of a note body, where a heading can legitimately follow it."""
-    entry = map_entry(
-        "Frontend Design Critique",
-        "## Summary\n\nA Douyin walkthrough presents a two-stage workflow. A second sentence.",
-    )
-
-    assert "## Summary" not in entry
-    assert entry == (
-        "- [[Frontend Design Critique]] — A Douyin walkthrough presents a two-stage workflow."
-    )
-
-
-def test_map_append_is_idempotent_across_revisions(tmp_path: Path) -> None:
-    vault = tmp_path / "vault"
-    service = BrainService(vault)
-    first = _prepare(service, source_url="https://example.com/critique")
-    service.commit_save(first.id)
-    second = _prepare(service, source_url="https://example.com/critique")
-    service.commit_save(second.id)
-
-    map_text = (vault / "Maps" / "Frontend Design.md").read_text(encoding="utf-8")
-    assert map_text.count("[[Frontend Design Critique]]") == 1
-
-
-def test_maps_are_indexable_notes(tmp_path: Path) -> None:
-    vault = tmp_path / "vault"
-    service = BrainService(vault)
-    service.commit_save(_prepare(service).id)
-
-    metadata, _ = read_note(vault / "Maps" / "Frontend Design.md")
-
-    assert metadata["type"] == "map"
-    assert metadata["status"] == "approved"
-
-
-# --- revisions -----------------------------------------------------------------------
-
-
-def test_duplicate_source_url_targets_a_reviewed_revision(tmp_path: Path) -> None:
-    vault = tmp_path / "vault"
-    service = BrainService(vault)
-    first = _prepare(
-        service,
-        note_type="concept",
-        title="Agent Memory",
-        source_url="https://example.com/memory",
-    )
-    service.commit_save(first.id)
-
-    revision = _prepare(
-        service,
-        note_type="concept",
-        title="Agent Memory Updated",
-        source_url="https://example.com/memory",
-    )
-
-    assert revision.target_path == "Tech/Notes/Agent Memory.md"
-    assert revision.is_revision is True
-
-
-def test_revision_is_found_in_the_new_folders(tmp_path: Path) -> None:
-    """_find_by_source_url used a hardcoded folder list that omitted Notes/."""
-    vault = tmp_path / "vault"
-    service = BrainService(vault)
-    first = _prepare(service, note_type="concept", title="Local RAG", source_url="https://example.com/rag")
-    service.commit_save(first.id)
-
-    revision = _prepare(service, note_type="concept", title="Local RAG v2", source_url="https://example.com/rag")
-
-    assert revision.is_revision is True
-    assert revision.target_path == "Tech/Notes/Local RAG.md"
-
-
-def test_revision_preserves_the_original_note_id(tmp_path: Path) -> None:
-    vault = tmp_path / "vault"
-    service = BrainService(vault)
-    first = _prepare(service, note_type="concept", title="Chunking", source_url="https://example.com/chunk")
-    saved = service.commit_save(first.id)
-    original_id = read_note(vault / saved.note_path)[0]["id"]
-
-    revision = _prepare(service, note_type="concept", title="Chunking", source_url="https://example.com/chunk")
-    service.commit_save(revision.id)
-
-    assert read_note(vault / saved.note_path)[0]["id"] == original_id
-
-
-# --- layout ---------------------------------------------------------------------------
-
-
-def test_layout_does_not_recreate_retired_folders(tmp_path: Path) -> None:
-    """_ensure_layout used to resurrect Knowledge/, Resources/ and Inbox/ on every start."""
-    vault = tmp_path / "vault"
-    BrainService(vault)
-    BrainService(vault)
-
-    for retired in ("Inbox", "Knowledge", "Resources"):
-        assert not (vault / retired).exists()
-    for expected in (
-        "Tech/Notes", "Tech/Prompts", "Tech/Skills", "Tech/Projects", "Tech/Essays",
-        "Personal/Notes", "Personal/Essays", "Maps", "Sources", "Templates",
-    ):
-        assert (vault / expected).is_dir()
-
-
-def test_layout_keeps_a_retired_folder_that_still_holds_files(tmp_path: Path) -> None:
-    vault = tmp_path / "vault"
-    BrainService(vault)
-    stray = vault / "Knowledge" / "Unmigrated.md"
-    stray.parent.mkdir(parents=True, exist_ok=True)
-    stray.write_text("keep me", encoding="utf-8")
-
-    BrainService(vault)
-
-    assert stray.exists()
-
-
-# --- retrying a blocked save must not leave orphans ----------------------------------
-
-
-def test_re_preparing_the_same_capture_supersedes_the_blocked_attempt(tmp_path: Path) -> None:
-    """The gate tells the agent to fix and re-prepare, which mints a new id. Without
-    superseding, every blocked save leaves a dead proposal in the review queue."""
-    vault = tmp_path / "vault"
-    service = BrainService(vault)
-
-    first = _prepare(service, maps=[], source_url="https://example.com/clip")
-    with pytest.raises(ValidationError):
-        service.commit_save(first.id)
-
-    second = _prepare(service, maps=["Frontend Design"], source_url="https://example.com/clip")
-
-    pending_ids = {proposal.id for proposal in service.list_pending()}
-    assert second.id in pending_ids
-    assert first.id not in pending_ids
-    assert (vault / "Reviews" / "Rejected" / f"{first.id}.md").exists()
-
-    service.commit_save(second.id)
-    assert service.list_pending() == []
-
-
-def test_superseding_only_applies_to_the_identical_capture(tmp_path: Path) -> None:
-    vault = tmp_path / "vault"
-    service = BrainService(vault)
-
-    first = _prepare(service, content="One thing entirely", title="First")
-    second = _prepare(service, content="A different thing entirely", title="Second")
-
-    pending_ids = {proposal.id for proposal in service.list_pending()}
-    assert {first.id, second.id} <= pending_ids
-
-
-# --- a whole document is not a summary ------------------------------------------------
-
-
-def test_a_summary_containing_headings_is_refused(tmp_path: Path) -> None:
-    """A client passed an entire note body as the summary, which then landed under the
-    rendered '## Summary' heading and polluted the map entry."""
-    vault = tmp_path / "vault"
-    service = BrainService(vault)
-    proposal = _prepare(
-        service,
-        summary="## Summary\n\nThe real summary.\n\n## Caveats\n\nSome caveats follow.",
-    )
-
-    with pytest.raises(ValidationError, match="summary"):
-        service.commit_save(proposal.id)
-
-
-def test_a_runaway_summary_is_refused(tmp_path: Path) -> None:
-    vault = tmp_path / "vault"
-    service = BrainService(vault)
-    proposal = _prepare(service, summary="Prose without any headings at all. " * 100)
-
-    with pytest.raises(ValidationError, match="summary"):
-        service.commit_save(proposal.id)
-
-
-def test_a_long_but_legitimate_summary_is_accepted(tmp_path: Path) -> None:
-    """The cap is a runaway guard, not a style rule; ordinary long prose must pass."""
-    vault = tmp_path / "vault"
-    service = BrainService(vault)
-    proposal = _prepare(service, summary="A genuinely detailed prose summary. " * 30)
-
-    service.commit_save(proposal.id)
-
-    assert (vault / proposal.target_path).exists()
-
-
-def test_prepare_input_keeps_the_canonical_source_url(tmp_path: Path) -> None:
-    """Capture writes the material to a scratch file and passes that path in.
-
-    Without an override the ingestor records the scratch path as provenance, so
-    the note points at a file that is local to the capturing container and is
-    deleted hours later. The canonical URL must win.
-    """
-    vault = tmp_path / "vault"
-    service = BrainService(vault)
-    scratch = tmp_path / "7654216649075068196-source.md"
-    scratch.write_text("# Captured\n\nBody of the captured post.\n", encoding="utf-8")
-
-    proposal = service.prepare_input(
-        str(scratch),
-        note_type="concept",
-        domain="tech",
-        title="AI tutor workflow",
-        summary="Use AI as an interactive tutor rather than a summariser.",
-        tags=["ai-learning", "mastery-learning"],
-        aliases=["AI tutor", "AI 交互式学习法"],
-        maps=["AI Coding Tools"],
-        source_url="https://www.douyin.com/video/7654216649075068196",
-        source_kind="douyin-video",
-        source_creator="阿韬NEX",
-    )
-
-    assert proposal.source_url == "https://www.douyin.com/video/7654216649075068196"
-    assert proposal.source_kind == "douyin-video"
-    assert not proposal.source_url.startswith("file://")
-
-
-def test_prepare_input_still_derives_source_url_when_not_given(tmp_path: Path) -> None:
-    """The override is optional; ingesting a real URL must keep working."""
-    vault = tmp_path / "vault"
-    service = BrainService(vault)
-    scratch = tmp_path / "note.md"
-    scratch.write_text("# Captured\n\nBody.\n", encoding="utf-8")
-
-    proposal = service.prepare_input(str(scratch), title="Local capture")
-    assert proposal.source_url.startswith("file://")
-
-
-def _capture_cache(tmp_path: Path, post_id: str) -> Path:
-    """The scratch a capture leaves behind: media plus the video tool's by-products."""
-    cache = tmp_path / "cache" / "videos"
-    cache.mkdir(parents=True)
-    (cache / f"{post_id}.mp4").write_bytes(b"x" * 2048)
-    (cache / f"{post_id}_source.md").write_text("captured", encoding="utf-8")
-    (cache / f"{post_id}_contact.jpg").write_bytes(b"x" * 512)
-    frames = cache / f"{post_id}_frames"
-    frames.mkdir()
-    (frames / "frame_1.png").write_bytes(b"x" * 256)
-    (cache / "9999999999999999999.mp4").write_bytes(b"x" * 128)  # another capture
-    return cache
-
-
-def _prepare_capture(service: BrainService, post_id: str, scratch: Path):
-    return service.prepare_input(
-        str(scratch),
-        note_type="concept",
-        domain="tech",
-        title=f"Captured post {post_id}",
-        summary="A captured short-video post used for provenance testing.",
-        tags=["ai-learning", "mastery-learning"],
-        aliases=["captured post", "短视频笔记"],
-        maps=["AI Coding Tools"],
-        source_url=f"https://www.douyin.com/video/{post_id}",
-        source_kind="douyin-video",
-    )
-
-
-def test_commit_purges_the_capture_scratch(tmp_path: Path, monkeypatch) -> None:
-    post_id = "7654216649075068196"
-    cache = _capture_cache(tmp_path, post_id)
-    monkeypatch.setenv("SECOND_BRAIN_CAPTURE_CACHE", str(cache))
-
-    from second_brain.api import BrainAPI
-
-    api = BrainAPI(tmp_path / "vault")
-    proposal = _prepare_capture(api.service, post_id, cache / f"{post_id}_source.md")
-    result = api.commit_save(proposal.id, approved=True)
-
-    assert result["scratch_purged"] == 4
-    assert not list(cache.glob(f"{post_id}*"))
-    # A different capture's files must survive.
-    assert (cache / "9999999999999999999.mp4").exists()
-
-
-def test_reject_purges_the_capture_scratch(tmp_path: Path, monkeypatch) -> None:
-    post_id = "7634669478189567246"
-    cache = _capture_cache(tmp_path, post_id)
-    monkeypatch.setenv("SECOND_BRAIN_CAPTURE_CACHE", str(cache))
-
-    from second_brain.api import BrainAPI
-
-    api = BrainAPI(tmp_path / "vault")
-    proposal = _prepare_capture(api.service, post_id, cache / f"{post_id}_source.md")
-    result = api.reject_save(proposal.id)
-
-    assert result["scratch_purged"] == 4
-    assert not list(cache.glob(f"{post_id}*"))
-
-
-def test_purge_is_off_when_no_cache_is_configured(tmp_path: Path, monkeypatch) -> None:
-    """Without the env var the vault must never delete files outside itself."""
-    post_id = "7649289638800067891"
-    cache = _capture_cache(tmp_path, post_id)
-    monkeypatch.delenv("SECOND_BRAIN_CAPTURE_CACHE", raising=False)
-
-    from second_brain.api import BrainAPI
-
-    api = BrainAPI(tmp_path / "vault")
-    proposal = _prepare_capture(api.service, post_id, cache / f"{post_id}_source.md")
-    result = api.commit_save(proposal.id, approved=True)
-
-    assert result.get("scratch_purged", 0) == 0
-    assert (cache / f"{post_id}.mp4").exists()
+    result = _capture(service)
+
+    service.approve(result.note_id, content_sha=result.content_sha)
+
+    shown = subprocess.run(
+        ["git", "show", "--name-status", "--no-renames", "--format=", "HEAD"],
+        cwd=vault, capture_output=True, text=True,
+    ).stdout
+    assert "D\tInbox/Frontend Design Critique.md" in shown
+    assert "A\tNotes/Frontend Design Critique.md" in shown
+    status = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=vault, capture_output=True, text=True
+    ).stdout
+    assert "Inbox" not in status and "Notes" not in status and "Sources" not in status

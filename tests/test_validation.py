@@ -2,171 +2,91 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from second_brain.index import BrainIndex
-from second_brain.notes import dump_note
+import pytest
+
+from second_brain.models import MAX_SUMMARY
+from second_brain.notes import dump_note, render_note
 from second_brain.service import BrainService
+from second_brain.validation import check_for_approval
+
+REGISTERED = {"ui", "data"}
 
 
-def _commit(service: BrainService, title: str, **overrides):
-    payload = dict(
-        note_type="concept",
-        domain="tech",
-        content=f"Body text for {title}.",
-        title=title,
-        summary=f"What {title} is for.",
-        tags=["testing", "fixture"],
-        aliases=[f"{title} alt", f"{title} alias"],
-        maps=["Test Map"],
+def _meta(**overrides):
+    meta = {"type": "concept", "domain": "tech", "tags": ["ui"], "summary": "A summary.", "revises": ""}
+    meta.update(overrides)
+    return meta
+
+
+def _check(tmp_path: Path, **overrides) -> list[str]:
+    return check_for_approval(_meta(**overrides), registered_tags=REGISTERED, vault=tmp_path)
+
+
+def test_a_conforming_note_has_no_problems(tmp_path: Path) -> None:
+    assert _check(tmp_path) == []
+
+
+@pytest.mark.parametrize(
+    ("overrides", "fragment"),
+    [
+        ({"summary": ""}, "summary cannot be empty"),
+        ({"summary": "## Heading\n\ntext"}, "Markdown headings"),
+        ({"summary": "x" * (MAX_SUMMARY + 1)}, "over the"),
+        ({"tags": []}, "at least"),
+        ({"tags": ["a", "b", "c", "d", "e", "f"]}, "at most"),
+        ({"tags": ["Not Kebab"]}, "kebab-case"),
+        ({"tags": ["unknown-tag"]}, "not registered"),
+        ({"type": "bogus"}, "type"),
+        ({"domain": "mars"}, "domain"),
+        ({"revises": "note-000000000000"}, "no approved note"),
+    ],
+)
+def test_each_blocking_rule(tmp_path: Path, overrides: dict, fragment: str) -> None:
+    problems = _check(tmp_path, **overrides)
+    assert any(fragment in problem for problem in problems), problems
+
+
+def test_aliases_and_maps_are_not_required(tmp_path: Path) -> None:
+    assert _check(tmp_path) == []  # no aliases, no maps key at all
+
+
+def test_lint_covers_notes_and_reports_inbox_and_orphan_sources_separately(tmp_path: Path) -> None:
+    service = BrainService(tmp_path / "vault")
+    service.register_tags(["ui"])
+    vault = service.vault
+    good = {"id": "note-aaaaaaaaaaaa", "status": "approved", "type": "concept", "domain": "tech",
+            "title": "Good", "tags": ["ui"], "sources": []}
+    (vault / "Notes" / "Good.md").write_text(
+        render_note(good, summary="Fine.", body="", connections=[]), encoding="utf-8"
     )
-    payload.update(overrides)
-    payload.setdefault("body", f"## Details\n\n{payload['content']}")
-    return service.commit_save(service.prepare_save(**payload).id)
-
-
-def test_lint_flags_a_hand_written_note_that_bypassed_the_save_path(tmp_path: Path) -> None:
-    vault = tmp_path / "vault"
-    service = BrainService(vault)
-    (vault / "Tech" / "Notes" / "Hand Written.md").write_text(
-        dump_note(
-            {"id": "note-manual", "type": "concept", "domain": "tech",
-             "status": "approved", "tags": ["testing"]},
-            "# Hand Written\n\n## Summary\n\nAdded by hand.\n",
-        ),
+    (vault / "Notes" / "Hand Written.md").write_text(
+        dump_note({"id": "note-bbbbbbbbbbbb", "type": "concept", "domain": "tech",
+                   "status": "approved", "tags": []}, "# Hand Written\n\nNo sections.\n"),
         encoding="utf-8",
     )
-
-    report = service.validate()
-    problems = next(f for f in report["findings"] if f["path"] == "Tech/Notes/Hand Written.md")["problems"]
-
-    assert any("aliases" in problem for problem in problems)
-    assert any("map" in problem for problem in problems)
-    assert any("tags" in problem for problem in problems)
-
-
-def test_lint_passes_a_note_written_through_the_save_path(tmp_path: Path) -> None:
-    vault = tmp_path / "vault"
-    service = BrainService(vault)
-    service.register_tags(["testing", "fixture"])
-    saved = _commit(service, "Conforming Note")
+    service.capture(content="c", title="Draft", summary="", tags=[])
+    (vault / "Sources" / "deadbeef0000-Lonely.md").write_text("---\nid: source-deadbeef0000\n---\n")
 
     report = service.validate()
 
-    assert saved.note_path not in [finding["path"] for finding in report["findings"]]
+    assert report["checked_notes"] == 2 and report["conforming"] == 1
+    assert [f["path"] for f in report["findings"]] == ["Notes/Hand Written.md"]
+    assert report["inbox"]["checked"] == 1
+    assert report["inbox"]["findings"][0]["path"] == "Inbox/Draft.md"
+    assert not any("status is" in p for p in report["inbox"]["findings"][0]["problems"])
+    assert "Sources/deadbeef0000-Lonely.md" in report["orphan_sources"]
+    assert len(report["orphan_sources"]) == 1  # the Draft's source is referenced by its inbox note
 
 
-def test_lint_reports_folders_left_over_from_the_old_layout(tmp_path: Path) -> None:
-    vault = tmp_path / "vault"
-    service = BrainService(vault)
-    stray = vault / "Resources" / "Old.md"
-    stray.parent.mkdir(parents=True, exist_ok=True)
-    stray.write_text("# Old\n", encoding="utf-8")
-
-    assert service.validate()["unmigrated_folders"] == ["Resources"]
-
-
-def test_null_source_url_is_reported_rather_than_treated_as_a_value(tmp_path: Path) -> None:
-    vault = tmp_path / "vault"
-    service = BrainService(vault)
-    (vault / "Tech" / "Notes" / "Null URL.md").write_text(
-        dump_note(
-            {
-                "id": "note-null",
-                "type": "concept",
-                "domain": "tech",
-                "status": "approved",
-                "tags": ["testing", "fixture"],
-                "aliases": ["a", "b"],
-                "maps": ["Test Map"],
-                "source_url": None,
-            },
-            "# Null URL\n",
-        ),
-        encoding="utf-8",
+def test_lint_flags_a_note_whose_status_is_not_approved(tmp_path: Path) -> None:
+    service = BrainService(tmp_path / "vault")
+    service.register_tags(["ui"])
+    meta = {"id": "note-aaaaaaaaaaaa", "status": "inbox", "type": "concept", "domain": "tech",
+            "title": "Stuck", "tags": ["ui"], "sources": []}
+    (service.vault / "Notes" / "Stuck.md").write_text(
+        render_note(meta, summary="Fine.", body="", connections=[]), encoding="utf-8"
     )
 
-    problems = next(
-        f for f in service.validate()["findings"] if f["path"] == "Tech/Notes/Null URL.md"
-    )["problems"]
+    problems = service.validate()["findings"][0]["problems"]
 
-    assert any("source_url is null" in problem for problem in problems)
-
-
-# --- maps must not crowd out the notes they index ------------------------------------
-
-
-def test_a_map_does_not_outrank_the_note_it_indexes(tmp_path: Path) -> None:
-    vault = tmp_path / "vault"
-    service = BrainService(vault)
-    _commit(
-        service,
-        "Semantic Chunking",
-        content="Semantic chunking splits documents on meaning rather than length.",
-        summary="How semantic chunking splits documents on meaning.",
-    )
-    index = BrainIndex(vault, embedder=None)
-    index.reindex()
-
-    hits = index.search("semantic chunking", limit=5, hops=1)
-
-    assert hits[0].path == "Tech/Notes/Semantic Chunking.md"
-    assert hits[0].note_type != "map"
-
-
-def test_graph_hops_do_not_travel_through_a_map(tmp_path: Path) -> None:
-    """Every note links to its map, so hopping through one would relate them all."""
-    vault = tmp_path / "vault"
-    service = BrainService(vault)
-    _commit(service, "Alpha Topic", content="Alpha concerns retrieval latency.")
-    _commit(service, "Unrelated Beta", content="Beta concerns kitchen plumbing entirely.")
-    index = BrainIndex(vault, embedder=None)
-    index.reindex()
-
-    hits = index.search("retrieval latency", limit=6, hops=1)
-
-    assert "Tech/Notes/Unrelated Beta.md" not in [hit.path for hit in hits]
-
-
-# --- ranking must not reward length ---------------------------------------------------
-
-
-def test_normal_retrieval_uses_the_approved_note_body_not_its_raw_source(tmp_path: Path) -> None:
-    """Raw captured content stays in Sources and is excluded from normal retrieval."""
-    vault = tmp_path / "vault"
-    service = BrainService(vault)
-    long_body = "\n\n".join(
-        f"Section {n}: soreness, microtears and hypertrophy explained at length. " * 12
-        for n in range(12)
-    )
-    _commit(
-        service,
-        "Why microtears do not drive growth",
-        content=long_body,
-        summary="Soreness and microtears do not drive hypertrophy.",
-    )
-    index = BrainIndex(vault, embedder=None)
-    index.reindex()
-
-    hits = index.search("soreness microtears hypertrophy", limit=5, hops=1)
-
-    assert hits
-    assert all(hit.note_type != "source" for hit in hits)
-    assert hits[0].path == "Tech/Notes/Why microtears do not drive growth.md"
-
-
-def test_graph_scores_do_not_cascade_between_seeds(tmp_path: Path) -> None:
-    """Seed scores were read from a dict being mutated inside the same loop."""
-    vault = tmp_path / "vault"
-    service = BrainService(vault)
-    _commit(service, "Alpha", content="Retrieval latency budgets and caching.")
-    index = BrainIndex(vault, embedder=None)
-    index.reindex()
-
-    hits = index.search("retrieval latency", limit=6, hops=1)
-
-    direct = [h for h in hits if not h.via_graph]
-    hopped = [h for h in hits if h.via_graph]
-    assert direct, "expected at least one direct match"
-    if hopped:
-        assert max(h.score for h in hopped) <= max(h.score for h in direct), (
-            "a graph neighbour outscored every direct match"
-        )
+    assert any("status is" in problem for problem in problems)
