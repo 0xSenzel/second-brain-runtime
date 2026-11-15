@@ -1,0 +1,8 @@
+name: durable-video
+version: 1.0.0
+description: Persist authorized Telegram video requests before polling acknowledgement and track Second Brain Inbox cleanup.
+provides_hooks:
+  - telegram_before_poll_ack
+  - pre_gateway_dispatch
+  - pre_tool_call
+  - post_tool_call
