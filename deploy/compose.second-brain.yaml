@@ -1,0 +1,71 @@
+# Add to ~/.hermes/deployment/compose.yaml, either by pasting the `second-brain`
+# service under `services:` or with a Compose `include:` entry for this file.
+# Build context ./second-brain = deploy/second-brain copied next to compose.yaml.
+
+services:
+  second-brain:
+    image: second-brain-runtime:4.0.0
+    pull_policy: never
+    build:
+      context: ./second-brain
+      args:
+        RUNTIME_REF: v4.0.0
+    container_name: second-brain
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 30s
+    env_file:
+      - ./second-brain.env            # holds SECOND_BRAIN_HTTP_TOKEN only; never inline a value
+    environment:
+      TZ: Asia/Kuala_Lumpur
+      SECOND_BRAIN_VAULT: /vault
+      OLLAMA_URL: http://ollama:11434
+      SECOND_BRAIN_EMBED_MODEL: bge-m3
+      SECOND_BRAIN_MODE: writer
+      SECOND_BRAIN_APPROVAL: chat
+    ports:
+      - "127.0.0.1:8765:8765"        # loopback only: Mac clients; Hermes uses http://second-brain:8765
+    networks:
+      - default
+    depends_on:
+      ollama:
+        condition: service_healthy
+    volumes:
+      - type: bind
+        source: ${HOME}/Documents/second-brain
+        target: /vault               # the only read-write mount of the vault
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+# --- Single-writer override for the existing `hermes` service -----------------
+# Uncomment and merge into the `hermes` service in compose.yaml AFTER the
+# second-brain container is verified. Compose merges `volumes` by target, so this
+# replaces the existing /vault entry.
+#
+# Why: schema 4 has one writer. Every write takes a lock, is atomic, and is
+# journaled in git by the second-brain container. A second read-write mount lets
+# Hermes tools (for example the `obsidian` skill or shell) edit notes with no lock,
+# no journal and no validation, and race Obsidian Sync. Read-only keeps
+# HERMES_MEDIA_ALLOW_DIRS=/vault working for reads and forces every save through
+# brain_capture.
+#
+#   hermes:
+#     volumes:
+#       - type: bind
+#         source: ${HOME}/Documents/second-brain
+#         target: /vault
+#         read_only: true
+#     environment:
+#       SECOND_BRAIN_HTTP_TOKEN: ${SECOND_BRAIN_HTTP_TOKEN}   # value comes from the deployment .env
+#     depends_on:
+#       second-brain:
+#         condition: service_healthy

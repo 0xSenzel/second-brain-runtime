@@ -1,0 +1,61 @@
+# Merge into /opt/data/config.yaml (inside the hermes-data volume).
+# Evidence (Hermes source, read-only):
+#   - HTTP: tools/mcp_tool.py:1-3 and tools/mcp_tool_transport.py:112-149 accept `url` (+ `headers`);
+#     Streamable HTTP is the default, `transport: sse` selects SSE (mcp_tool_server_run.py:288).
+#   - ${VAR} in url/headers resolves from the profile env or secret scope and fails closed when unset
+#     (tools/mcp_tool_config.py:545-600).
+#   - stdio servers get a FILTERED env (tools/mcp_tool_config.py:199-228): only safe baseline keys plus
+#     the entry's own `env:`. HTTP entries send no process env at all.
+#   - `tools.include/exclude` filter only what the MODEL sees (tools/mcp_tool_registration.py:249-263);
+#     plugin `ctx.call_mcp` bypasses it (hermes_cli/plugins.py:502-531), which the approval plugin uses.
+
+# ===== OPTION A (recommended): HTTP writer =====================================
+mcp_servers:
+  second-brain:
+    url: http://second-brain:8765/mcp
+    headers:
+      Authorization: "Bearer ${SECOND_BRAIN_HTTP_TOKEN}"
+    connect_timeout: 30
+    timeout: 120
+    tools:
+      # Out-of-band approval: hide brain_approve from the model. The user approves with
+      # the /brain-approve command from deploy/hermes/approval-plugin, which calls the
+      # server through the `second-brain-approver` entry below.
+      # If you do NOT install the plugin, delete this `tools:` block so the model can
+      # call brain_approve with user_approved + content_sha after explicit approval.
+      exclude: [brain_approve]
+
+  # Plugin-only entry: same server, registers zero tools for the model (include: []).
+  # Needed only with the approval plugin.
+  second-brain-approver:
+    url: http://second-brain:8765/mcp
+    headers:
+      Authorization: "Bearer ${SECOND_BRAIN_HTTP_TOKEN}"
+    connect_timeout: 30
+    timeout: 60
+    tools:
+      include: []
+
+# Grant the plugin access to the approver entry only (default is no MCP access).
+plugins:
+  enabled: [second-brain-approval]
+  entries:
+    second-brain-approval:
+      mcp_allowlist: ["second-brain-approver"]
+
+---
+# ===== OPTION B (FALLBACK, stdio reader): replaces Option A's entries ===========
+# Use only if HTTP fails. Hermes can then read but not write: the vault is mounted
+# read-only in hermes and writes would go through the Mac CLI or Obsidian.
+# The venv must be a NON-editable install of the tagged runtime (see README rollback).
+# Stdio env is filtered, so every variable must be listed here.
+mcp_servers:
+  second-brain:
+    command: /opt/data/venvs/second-brain/bin/second-brain-mcp
+    env:
+      SECOND_BRAIN_MODE: reader
+      SECOND_BRAIN_VAULT: /vault
+      SECOND_BRAIN_INDEX_PATH: /opt/data/second-brain-reader/index.sqlite3   # own index, not the vault's
+      OLLAMA_URL: http://ollama:11434
+      SECOND_BRAIN_EMBED_MODEL: bge-m3
+      SECOND_BRAIN_CAPTURE_CACHE: ""

@@ -1,0 +1,14 @@
+# PROPOSAL. Merge into ~/.codex/config.toml, replacing the current [mcp_servers.second-brain] table.
+# Codex reads the bearer token from the named environment variable; the value is never in this file.
+# Export SECOND_BRAIN_HTTP_TOKEN in the environment that launches Codex.
+
+[mcp_servers.second-brain]
+url = "http://127.0.0.1:8765/mcp"
+bearer_token_env_var = "SECOND_BRAIN_HTTP_TOKEN"
+
+# FALLBACK: reader-mode stdio with its own index. Use instead of the table above when the
+# container is down. Needs a non-editable install of the tagged runtime (see deploy/README.md).
+#
+# [mcp_servers.second-brain]
+# command = "/Users/senzel/.local/share/second-brain-reader/bin/second-brain-mcp"
+# env = { SECOND_BRAIN_MODE = "reader", SECOND_BRAIN_VAULT = "/Users/senzel/Documents/second-brain", SECOND_BRAIN_INDEX_PATH = "/Users/senzel/Library/Caches/second-brain/reader-index.sqlite3", OLLAMA_URL = "http://127.0.0.1:11434", SECOND_BRAIN_EMBED_MODEL = "bge-m3" }
