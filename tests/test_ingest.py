@@ -69,3 +69,23 @@ def test_youtube_ingestion_preserves_non_english_track_metadata(monkeypatch):
 def test_youtube_live_url_uses_caption_provider(monkeypatch):
     import second_brain.ingest as module
     assert module._youtube_id("https://www.youtube.com/live/abcdefghijk") == "abcdefghijk"
+
+
+def test_plain_text_gets_heading_title_and_no_provenance_url() -> None:
+    source = SourceIngestor().ingest("# A Heading\n\nBody")
+    assert (source.kind, source.title, source.source_url) == ("note", "A Heading", "")
+
+
+def test_explicit_kind_overrides_inferred_kind(tmp_path: Path) -> None:
+    path = tmp_path / "SKILL.md"
+    path.write_text("# S", encoding="utf-8")
+    assert SourceIngestor().ingest(str(path), kind="prompt").kind == "prompt"
+
+
+def test_unsupported_local_file_type_is_rejected(tmp_path: Path) -> None:
+    import pytest
+
+    path = tmp_path / "data.bin"
+    path.write_bytes(b"\x00")
+    with pytest.raises(ValueError, match="Unsupported"):
+        SourceIngestor().ingest(str(path))
