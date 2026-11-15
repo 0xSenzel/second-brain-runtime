@@ -9,6 +9,7 @@ never opens the vault, so it cannot become a second writer.
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 
@@ -56,4 +57,6 @@ async def relay(url: str, token: str | None) -> None:
 
 
 def run(url: str, token_file: str | None) -> None:
+    # httpx logs one INFO line per request; clients surface stderr as server noise.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     anyio.run(relay, url, read_token(token_file))
