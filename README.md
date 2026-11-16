@@ -1,9 +1,78 @@
-# Local Second Brain
+# Second Brain Runtime
 
-A capture-first knowledge layer for an Obsidian vault. Codex, Claude, and Hermes capture
-material into an `Inbox/` folder, and you approve what stays. Approved notes feed
-hybrid search (keyword plus local embeddings) that returns bounded, cited context without
-loading the whole vault.
+A self-hosted memory for AI assistants. Claude Code, Codex, and a Telegram agent save
+what you share with them into one Obsidian vault, and you approve each note before it
+stays. When you ask a question later, the assistant searches the vault and answers with
+links to the notes it used.
+
+## Overview
+
+### The problem
+
+AI assistants forget everything between sessions. A notes app remembers, but saving to it
+by hand is slow. If an AI writes to it directly, it fills with unchecked output. Pasting a
+whole notes folder into every chat doesn't scale either.
+
+### How it works
+
+```mermaid
+flowchart TD
+    you([You])
+    subgraph clients[AI assistants]
+        cc[Claude Code]
+        cx[Codex]
+        tg[Hermes agent on Telegram]
+    end
+    brain[Second Brain service]
+    inbox[(Inbox: drafts)]
+    notes[(Notes: approved)]
+    phone[Obsidian on your phone]
+
+    you -- "save this" --> clients
+    clients -- "MCP" --> brain
+    brain -- "1 draft" --> inbox
+    you -- "2 approve in Telegram or Obsidian" --> brain
+    brain -- "moves it" --> notes
+    notes -- "Obsidian Sync" --> phone
+    brain -- "3 cited answers" --> clients
+```
+
+1. **Capture.** You paste a link, an article, a video, or a prompt into any assistant and
+   say "save this to my brain." The assistant writes a draft note to `Inbox/`.
+2. **Review.** You read the draft in Telegram (`/brain_review`) or in Obsidian, then
+   approve or discard it. The approval covers the exact version you read. If the draft
+   changes after you read it, the approval fails.
+3. **Ask.** Later, an assistant asks the brain a question. The brain returns the most
+   relevant passages, within a 4,000-token budget, with each note's path and source URL.
+
+### Highlights
+
+- **You stay in control.** An assistant can draft notes but can't approve them. The
+  Telegram approval commands run outside the AI model, and each approval is bound to the
+  SHA-256 hash of the version you reviewed.
+- **Accurate search.** Keyword ranking (BM25) and local embeddings (`bge-m3` on Ollama)
+  are combined with reciprocal rank fusion. In a 40-query test on a real 80-note vault,
+  the right note ranked first 97% of the time, up from 69% with keywords alone. See
+  [the retrieval evaluation](docs/RETRIEVAL_EVALUATION.md).
+- **Nothing is lost.** One process writes to the vault. Each write is atomic and becomes
+  its own git commit. Discarded and deleted notes move to an archive with a receipt.
+- **Private by default.** Notes, embeddings, and the search index stay on your own
+  machine. Local clients connect through a relay that reads the access token from a file,
+  so no client config holds a secret.
+- **Plain files.** The vault is ordinary Markdown that Obsidian opens. The search index
+  rebuilds from those files at any time.
+
+### Built with
+
+Python 3.11+, the Model Context Protocol (MCP), SQLite FTS5 and `sqlite-vec`, Ollama,
+Docker, [Hermes Agent](https://github.com/NousResearch/hermes-agent), and Obsidian. The
+test suite uses pytest.
+
+For component diagrams, the write path, and the trust boundaries, see
+[the architecture document](docs/ARCHITECTURE.md). The rest of this README is the
+reference for using and running the service.
+
+## Design rules
 
 The Markdown vault is the source of truth. The SQLite index and vectors are disposable.
 Exactly one process, the writer, changes vault files, and every write is a git commit in
@@ -169,27 +238,27 @@ The writer starts a background worker that embeds new chunks, and it runs `promo
 startup. Search uses keyword ranking alone when Ollama is stopped, and fuses it with vector
 ranking when embeddings are available.
 
-## Installed locations
+## Default locations
 
-- Runtime: `/Users/senzel/Desktop/codes/second-brain-runtime`
-- Vault: `/Users/senzel/Documents/second-brain`
+- Vault: `~/Documents/second-brain`, or the path in `SECOND_BRAIN_VAULT`
 - Embeddings: Ollama with `bge-m3`, stored locally
 - Search index: `<vault>/.second-brain/index.sqlite3`
 - Deployment: the `second-brain` container, staged in [deploy/README.md](deploy/README.md)
 
 ## Local maintenance
 
+Run these from the repository root. Replace VAULT with the path to your vault.
+
 ```sh
-cd /Users/senzel/Desktop/codes/second-brain-runtime
 uv sync
 uv run pytest
-uv run brain --vault /Users/senzel/Documents/second-brain doctor
-uv run brain --vault /Users/senzel/Documents/second-brain validate
-uv run brain --vault /Users/senzel/Documents/second-brain reindex
-uv run brain --vault /Users/senzel/Documents/second-brain embed
-uv run brain --vault /Users/senzel/Documents/second-brain inbox
-uv run brain --vault /Users/senzel/Documents/second-brain digest
-uv run brain --vault /Users/senzel/Documents/second-brain report
+uv run brain --vault VAULT doctor
+uv run brain --vault VAULT validate
+uv run brain --vault VAULT reindex
+uv run brain --vault VAULT embed
+uv run brain --vault VAULT inbox
+uv run brain --vault VAULT digest
+uv run brain --vault VAULT report
 ```
 
 ## Migrate from schema 3
@@ -223,3 +292,7 @@ tag and rollback, is in [deploy/README.md](deploy/README.md).
 - [deploy/README.md](deploy/README.md): schema 4 deployment runbook.
 - [docs/RETRIEVAL_EVALUATION.md](docs/RETRIEVAL_EVALUATION.md): retrieval method and results.
 - [docs/RESEARCH.md](docs/RESEARCH.md): evaluated local alternatives.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
