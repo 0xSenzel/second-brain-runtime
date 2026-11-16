@@ -1,4 +1,5 @@
 # Second Brain Runtime
+[![CI](https://github.com/0xSenzel/second-brain-runtime/actions/workflows/ci.yml/badge.svg)](https://github.com/0xSenzel/second-brain-runtime/actions/workflows/ci.yml)
 
 A self-hosted memory for AI assistants. Claude Code, Codex, and a Telegram agent save
 what you share with them into one Obsidian vault, and you approve each note before it
